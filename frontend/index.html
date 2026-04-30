@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpeedBuyer — Nike Monitor</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header class="header">
+  <div class="header-brand">
+    <span class="brand-logo">⚡</span>
+    <span class="brand-name">SpeedBuyer</span>
+    <span class="brand-sub">Nike Monitor</span>
+  </div>
+  <div class="header-center">
+    <div class="status-pill" id="conn-status">
+      <span class="status-dot"></span>
+      <span class="status-label">Connecting…</span>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-ghost" id="btn-check-all" title="Check all now">↻ Check All</button>
+    <button class="btn btn-ghost" id="btn-settings">⚙ Settings</button>
+    <button class="btn btn-primary" id="btn-add">+ Add Product</button>
+  </div>
+</header>
+
+<!-- ── Stats bar ───────────────────────────────────────────────────────────── -->
+<div class="stats-bar">
+  <div class="stat-item"><span class="stat-value" id="stat-monitored">0</span><span class="stat-label">Monitored</span></div>
+  <div class="stat-divider"></div>
+  <div class="stat-item"><span class="stat-value" id="stat-instock">0</span><span class="stat-label">In Stock</span></div>
+  <div class="stat-divider"></div>
+  <div class="stat-item"><span class="stat-value" id="stat-alerts">0</span><span class="stat-label">Alerts Today</span></div>
+  <div class="stat-divider"></div>
+  <div class="stat-item"><span class="stat-value" id="stat-interval">—</span><span class="stat-label">Check Interval</span></div>
+  <div class="stat-divider"></div>
+  <div class="stat-item"><span class="stat-value" id="stat-last-check">—</span><span class="stat-label">Last Check</span></div>
+</div>
+
+<!-- ── Main layout ─────────────────────────────────────────────────────────── -->
+<div class="layout">
+
+  <!-- Products grid -->
+  <main class="products-area">
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">👟</div>
+      <h2>No products monitored yet</h2>
+      <p>Add a Nike product URL to start tracking price and availability.</p>
+      <button class="btn btn-primary" id="btn-add-empty">+ Add Product</button>
+    </div>
+    <div id="products-grid" class="products-grid"></div>
+  </main>
+
+  <!-- Alerts sidebar -->
+  <aside class="alerts-panel">
+    <div class="alerts-header">
+      <h3>Alerts</h3>
+      <button class="btn btn-ghost btn-sm" id="btn-clear-alerts">Clear</button>
+    </div>
+    <div id="alerts-list" class="alerts-list">
+      <p class="no-alerts">No alerts yet</p>
+    </div>
+  </aside>
+
+</div>
+
+<!-- ── Add Product Modal ───────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-add">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Add Nike Product</h2>
+      <button class="modal-close" data-modal="modal-add">✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="form-label">Nike Product URL</label>
+      <input type="url" class="form-input" id="add-url"
+             placeholder="https://www.nike.com/t/air-force-1-07-shoes/CW2288-111" />
+      <p class="form-hint">Paste any Nike product page URL. Prices and sizes will be tracked automatically.</p>
+      <div id="add-error" class="form-error hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-modal="modal-add">Cancel</button>
+      <button class="btn btn-primary" id="btn-add-submit">
+        <span id="add-btn-text">Start Monitoring</span>
+        <span id="add-btn-spinner" class="spinner hidden"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Settings Modal ─────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-settings">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h2>⚙ Settings</h2>
+      <button class="modal-close" data-modal="modal-settings">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="settings-section">
+        <h3>Monitor</h3>
+        <label class="form-label">Check interval (minutes)</label>
+        <input type="number" class="form-input" id="set-interval" min="1" max="60" value="5" />
+        <p class="form-hint">Minimum 1 minute. Nike may block too-frequent requests.</p>
+      </div>
+
+      <div class="settings-section">
+        <h3>Email Alerts</h3>
+        <label class="toggle-row">
+          <span>Enable email alerts</span>
+          <input type="checkbox" id="set-email-enabled" class="toggle-input" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+        <div id="email-fields" class="email-fields">
+          <div class="form-row">
+            <div>
+              <label class="form-label">SMTP Host</label>
+              <input type="text" class="form-input" id="set-email-host" value="smtp.gmail.com" />
+            </div>
+            <div>
+              <label class="form-label">SMTP Port</label>
+              <input type="number" class="form-input" id="set-email-port" value="587" />
+            </div>
+          </div>
+          <label class="form-label">Email (sender)</label>
+          <input type="email" class="form-input" id="set-email-user" placeholder="you@gmail.com" />
+          <label class="form-label">App Password</label>
+          <input type="password" class="form-input" id="set-email-pass" placeholder="Gmail app password" />
+          <label class="form-label">Alert recipient</label>
+          <input type="email" class="form-input" id="set-email-to" placeholder="alerts@example.com" />
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-modal="modal-settings">Cancel</button>
+      <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast container ────────────────────────────────────────────────────── -->
+<div id="toast-container" class="toast-container"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

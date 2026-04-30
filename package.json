@@ -1,0 +1,10 @@
+{
+  "name": "speedbuyer",
+  "version": "1.0.0",
+  "description": "Nike product monitor — watches price & availability, sends alerts",
+  "scripts": {
+    "setup": "cd backend && npm install",
+    "start": "cd backend && node server.js",
+    "dev": "cd backend && npx nodemon server.js"
+  }
+}
