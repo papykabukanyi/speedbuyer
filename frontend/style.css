@@ -198,11 +198,24 @@ body {
 .badge-outstock { background: #ef444422; color: var(--red);   border: 1px solid #ef444444; }
 .badge-unknown  { background: #88888822; color: var(--muted); border: 1px solid #88888844; }
 
-.card-meta     { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.card-meta     { color: var(--muted); font-size: 12px; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .card-price    { font-size: 22px; font-weight: 800; color: var(--text); margin-bottom: 10px; }
+.cart-meta-text { color: var(--muted); font-size: 11px; }
 .price-drop    { color: var(--green); }
 .price-rise    { color: var(--red); }
 .price-orig    { font-size: 13px; text-decoration: line-through; color: var(--muted); margin-left: 6px; font-weight: 400; }
+.cart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #3b82f622;
+  color: var(--blue);
+  border: 1px solid #3b82f644;
+  font-size: 11px;
+  font-weight: 700;
+}
 
 .card-release {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;

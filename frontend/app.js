@@ -174,6 +174,10 @@ function buildCardHTML(p) {
   const errorHTML = p.lastError
     ? `<div class="card-error">⚠ ${escHtml(p.lastError)}</div>` : '';
 
+  const cartBadge = p.inCart
+    ? `<span class="cart-chip">💼 In Cart</span>`
+    : '';
+
   // Image
   const imgHTML = p.image
     ? `<img class="card-image" src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><div class="card-image-placeholder" style="display:none">👟</div>`
@@ -191,6 +195,8 @@ function buildCardHTML(p) {
     <div class="card-meta">
       ${p.styleCode ? `<span>${escHtml(p.styleCode)}</span>` : ''}
       ${p.colorway  ? ` · <span>${escHtml(p.colorway)}</span>` : ''}
+      ${cartBadge}
+      ${p.cartAttempts ? ` · <span class="cart-meta-text">${p.cartAttempts} attempts / ${p.cartSuccessCount || 0} success</span>` : ''}
     </div>
     ${priceHTML}
     ${releaseHTML}
@@ -199,6 +205,7 @@ function buildCardHTML(p) {
     <div class="card-footer">
       <span class="card-last-check">${p.lastChecked ? 'Checked ' + timeAgo(p.lastChecked) : 'Not checked yet'}</span>
       <div class="card-actions">
+        ${p.inCart ? '<button class="btn btn-ghost btn-sm" disabled title="Already in cart">💼 In Cart</button>' : `<button class="btn btn-ghost btn-sm btn-add-cart" data-id="${p.id}" title="Add to cart">🛒 Add to Cart</button>`}
         <button class="btn btn-ghost btn-sm btn-check-now" data-id="${p.id}" ${checking ? 'disabled' : ''} title="Check now">↻</button>
         <button class="btn btn-danger btn-sm btn-remove" data-id="${p.id}" title="Remove">✕</button>
       </div>
@@ -226,6 +233,28 @@ function attachCardHandlers(id) {
       toast('error', 'Check failed', 'Cannot reach server');
       state.checking.delete(id);
       renderProductCard(state.products.find(p => p.id === id));
+    }
+  });
+
+  card.querySelector('.btn-add-cart')?.addEventListener('click', async () => {
+    try {
+      const res = await fetch(`${API}/api/products/${id}/cart`, { method: 'POST' });
+      if (!res.ok) {
+        const e = await res.json();
+        toast('error', 'Cart error', e.error || 'Failed to add to cart');
+        return;
+      }
+      const json = await res.json();
+      const updated = json.product;
+      const idx = state.products.findIndex(p => p.id === updated.id);
+      if (idx !== -1) {
+        state.products[idx] = { ...state.products[idx], ...updated };
+        renderProductCard(state.products[idx]);
+      }
+      updateStats();
+      toast('success', 'Added to cart', updated.name);
+    } catch {
+      toast('error', 'Cart error', 'Cannot reach server');
     }
   });
 
@@ -290,6 +319,7 @@ const ALERT_LABELS = {
   OUT_OF_STOCK  : '❌ Sold Out',
   SIZE_AVAILABLE: '👟 New Sizes',
   RELEASE_DATE_SET: '📅 Release Date',
+  CART_ADDED    : '🛒 Added to Cart',
 };
 
 function buildAlertHTML(a) {
@@ -306,6 +336,9 @@ function buildAlertHTML(a) {
 function updateStats() {
   el('stat-monitored').textContent = state.products.length;
   el('stat-instock').textContent   = state.products.filter(p => p.inStock === true).length;
+  el('stat-incart').textContent    = state.products.filter(p => p.inCart === true).length;
+  el('stat-cart-successes').textContent = state.products.reduce((sum, p) => sum + (p.cartSuccessCount || 0), 0);
+  el('stat-cart-attempts').textContent = state.products.reduce((sum, p) => sum + (p.cartAttempts || 0), 0);
 
   const today  = new Date().toDateString();
   const todayAlerts = state.alerts.filter(a => new Date(a.timestamp).toDateString() === today).length;
@@ -443,7 +476,7 @@ function requestNotificationPermission() {
 
 function showBrowserNotification(alert) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const icon = { PRICE_DROP: '📉', PRICE_RISE: '📈', BACK_IN_STOCK: '✅', OUT_OF_STOCK: '❌', SIZE_AVAILABLE: '👟', RELEASE_DATE_SET: '📅' }[alert.type] || '🔔';
+  const icon = { PRICE_DROP: '📉', PRICE_RISE: '📈', BACK_IN_STOCK: '✅', OUT_OF_STOCK: '❌', SIZE_AVAILABLE: '👟', RELEASE_DATE_SET: '📅', CART_ADDED: '🛒' }[alert.type] || '🔔';
   const n = new Notification(`${icon} ${alert.type.replace(/_/g, ' ')}`, {
     body: `${alert.message}\n${alert.productName}`,
     tag : alert.productId,

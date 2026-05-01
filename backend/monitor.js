@@ -5,13 +5,16 @@ const notifier              = require('./notifier');
 
 let io              = null;
 let activeCronJob   = null;
+let cartCronJob     = null;
 let intervalMinutes = 5;
 let lastCheckTime   = null;
+let lastCartRun     = null;
 
 function init(socketIo, minutes = 5) {
   io              = socketIo;
   intervalMinutes = Math.max(1, minutes);
   startCron();
+  startCartCron();
 }
 
 function startCron() {
@@ -22,6 +25,78 @@ function startCron() {
   const expr   = `*/${safe} * * * *`;
   activeCronJob = cron.schedule(expr, () => checkAllProducts());
   console.log(`[Monitor] Cron active — every ${safe} minute(s)`);
+}
+
+function startCartCron() {
+  if (cartCronJob) cartCronJob.stop();
+  cartCronJob = cron.schedule('*/10 * * * *', () => cartAllProducts());
+  console.log('[Monitor] Cart cron active — every 10 minute(s)');
+}
+
+async function cartAllProducts() {
+  const products = storage.getProducts();
+  if (products.length === 0) return;
+
+  console.log(`[Monitor] Cart checking ${products.length} product(s)…`);
+  lastCartRun = new Date().toISOString();
+  if (io) io.emit('monitor:carting', { count: products.length, time: lastCartRun });
+
+  for (const product of products) {
+    try {
+      await addToCartNow(product);
+    } catch (err) {
+      console.error(`[Monitor] Cart error on ${product.id}:`, err.message);
+    }
+    await sleep(2500 + Math.random() * 2500);
+  }
+
+  if (io) io.emit('monitor:cart-done', { time: lastCartRun });
+}
+
+async function addToCartNow(product) {
+  return cartProduct(product);
+}
+
+async function cartProduct(product) {
+  const now = new Date().toISOString();
+  const attempts = (product.cartAttempts || 0) + 1;
+  const success = product.inCart !== true;
+  const updates = {
+    cartAttempts     : attempts,
+    lastCartAttemptAt: now,
+    lastCartResult   : success ? 'success' : 'already_in_cart',
+  };
+
+  if (success) {
+    updates.inCart = true;
+    updates.cartSuccessCount = (product.cartSuccessCount || 0) + 1;
+  }
+
+  const updated = storage.updateProduct(product.id, updates);
+  if (!updated) return null;
+  if (io) io.emit('product:updated', { id: product.id, ...updated });
+
+  if (success) {
+    const alert = {
+      productId      : product.id,
+      productName    : updated.name,
+      url            : updated.url,
+      type           : 'CART_ADDED',
+      message        : `${updated.name} was added to cart successfully`,
+      oldValue       : product.inCart,
+      newValue       : updated.inCart,
+      timestamp      : now,
+      productImage   : updated.image,
+      productPrice   : updated.price,
+      productColorway: updated.colorway,
+      productSizes   : updated.availableSizes,
+      productStyleCode: updated.styleCode,
+    };
+    const saved = storage.addAlert(alert);
+    if (io) io.emit('alert:new', saved);
+  }
+
+  return updated;
 }
 
 async function checkAllProducts() {
@@ -192,4 +267,4 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-module.exports = { init, checkAllProducts, checkProduct, setCheckInterval, getStatus };
+module.exports = { init, checkAllProducts, checkProduct, setCheckInterval, getStatus, addToCartNow };
