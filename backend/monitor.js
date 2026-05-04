@@ -1,5 +1,5 @@
 const cron                  = require('node-cron');
-const { scrapeNikeProduct } = require('./scraper');
+const { scrapeProduct } = require('./scraper');
 const storage               = require('./storage');
 const notifier              = require('./notifier');
 
@@ -240,7 +240,7 @@ async function checkAllProducts() {
 }
 
 async function checkProduct(product) {
-  const fresh  = await scrapeNikeProduct(product.url);
+  const fresh  = await scrapeProduct(product.url);
   const alerts = [];
 
   if (!fresh.name || fresh.name === 'Unknown Product') {

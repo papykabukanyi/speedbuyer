@@ -10,6 +10,9 @@ const { v4: uuid } = require('uuid');
 
 const path     = require('path');
 
+const axios    = require('axios');
+const cheerio  = require('cheerio');
+
 
 
 const storage  = require('./storage');
@@ -17,13 +20,34 @@ const checkoutStore = require('./checkoutStore');
 
 const monitor  = require('./monitor');
 
-const { scrapeNikeProduct, resolveUrl } = require('./scraper');
+const { scrapeProduct, resolveUrl } = require('./scraper');
+
+const DISCOVERY_SOURCES = [
+  { name: 'Nike Launch', url: 'https://www.nike.com/launch', maxProducts: 8 },
+  { name: 'Adidas Confirmed', url: 'https://www.adidas.com/us/confirmed', maxProducts: 6 },
+  { name: 'Foot Locker New Arrivals', url: 'https://www.footlocker.com/category/new-arrivals.html', maxProducts: 6 },
+  { name: 'StockX Sneakers', url: 'https://stockx.com/sneakers', maxProducts: 6 },
+  { name: 'GOAT Sneakers', url: 'https://www.goat.com/sneakers', maxProducts: 6 },
+];
+
+const DISCOVERY_INTERVAL_MINUTES = 120;
+const DISCOVERY_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'no-cache',
+};
 
 
 
-// Nike short-link / deep-link domains that redirect to nike.com
-
-const ALLOWED_NIKE_HOSTS = ['nike.com', 'nike.sng.link', 'nikerunning.app.link'];
+// Supported release site hostnames
+const ALLOWED_HOSTS = [
+  'nike.com', 'nike.sng.link', 'nikerunning.app.link',
+  'adidas.com', 'adidas.eu',
+  'stockx.com', 'goat.com',
+  'footlocker.com', 'eastbay.com', 'champssports.com',
+  'finishline.com', 'stadiumgoods.com', 'supremenewyork.com',
+];
 
 
 
@@ -120,7 +144,7 @@ app.post('/api/products', async (req, res) => {
 
   if (!url || typeof url !== 'string') {
 
-    return res.status(400).json({ error: 'A Nike product URL is required' });
+    return res.status(400).json({ error: 'A product URL is required' });
 
   }
 
@@ -136,11 +160,11 @@ app.post('/api/products', async (req, res) => {
 
 
 
-  const isNikeHost = ALLOWED_NIKE_HOSTS.some(h => parsed.hostname === h || parsed.hostname.endsWith('.' + h));
+  const isSupportedHost = ALLOWED_HOSTS.some(h => parsed.hostname === h || parsed.hostname.endsWith('.' + h));
 
-  if (!isNikeHost) {
+  if (!isSupportedHost) {
 
-    return res.status(400).json({ error: 'Only Nike URLs are supported (nike.com or nike.sng.link)' });
+    return res.status(400).json({ error: `Only supported product URLs are allowed. Supported stores: ${ALLOWED_HOSTS.join(', ')}` });
 
   }
 
@@ -160,7 +184,7 @@ app.post('/api/products', async (req, res) => {
 
     const resolvedUrl = await resolveUrl(url);
 
-    const data    = await scrapeNikeProduct(resolvedUrl);
+    const data    = await scrapeProduct(resolvedUrl);
 
     // Store the resolved URL but keep the original URL for dedup checks
 
@@ -392,6 +416,11 @@ app.post('/api/check-all', async (req, res) => {
 
 
 
+app.post('/api/discover', async (req, res) => {
+  res.json({ success: true, message: 'Discovery triggered' });
+  discoverTrendingProducts().catch(err => console.error('[Discovery] Manual trigger failed:', err.message));
+});
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 
 io.on('connection', async (socket) => {
@@ -424,6 +453,124 @@ io.on('connection', async (socket) => {
 });
 
 
+// ── Discovery helpers ───────────────────────────────────────────────────────
+
+function normalizeUrl(href, base) {
+  try {
+    const url = new URL(href, base);
+    url.hash = '';
+    url.search = url.search.replace(/utm_[^=&]+(&|$)/g, '').replace(/&$/, '');
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isSupportedProductUrl(urlString) {
+  try {
+    const url = new URL(urlString);
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname.toLowerCase();
+
+    if (!ALLOWED_HOSTS.some(h => host === h || host.endsWith('.' + h))) return false;
+    if (path.includes('/cart') || path.includes('/privacy') || path.includes('/login') || path.includes('/account')) return false;
+
+    const matchers = [
+      { host: /nike/, regex: /(\/t\/|\/launch\/|\/shoe\/|\/product\/)/ },
+      { host: /adidas/, regex: /(\/product\/|\/confirmed\/|\/launch\/|\/sneakers\/)/ },
+      { host: /footlocker|eastbay|champssports/, regex: /(\/product\/|\/sku\/|\/shoe\/|\/new-arrivals|\/launches)/ },
+      { host: /finishline/, regex: /(\/product\/|\/sku\/|\/sneakers\/)/ },
+      { host: /stockx/, regex: /\/sneakers\// },
+      { host: /goat/, regex: /\/p\// },
+      { host: /stadiumgoods/, regex: /\/product\// },
+      { host: /supremenewyork/, regex: /(\/products\/|\/shop\/)/ },
+    ];
+
+    for (const item of matchers) {
+      if (item.host.test(host) && item.regex.test(path)) return true;
+    }
+
+    return /(\/product|\/sneakers|\/shoe|\/t\/|\/p\/|\/products\/|\/item\/)/.test(path);
+  } catch {
+    return false;
+  }
+}
+
+function extractProductLinks(html, baseUrl) {
+  const $ = cheerio.load(html);
+  const urls = new Set();
+
+  $('a[href]').each((_, el) => {
+    const raw = $(el).attr('href');
+    if (!raw) return;
+    const normalized = normalizeUrl(raw, baseUrl);
+    if (!normalized || !isSupportedProductUrl(normalized)) return;
+    urls.add(normalized);
+  });
+
+  return [...urls];
+}
+
+async function discoverTrendingProducts() {
+  const existing = storage.getProducts();
+  const existingUrls = new Set(existing.map(p => p.sourceUrl || p.url));
+  const discovered = new Set();
+
+  for (const source of DISCOVERY_SOURCES) {
+    try {
+      const response = await axios.get(source.url, { headers: DISCOVERY_HEADERS, timeout: 25000 });
+      const links = extractProductLinks(response.data, source.url);
+      let added = 0;
+
+      for (const productUrl of links) {
+        if (existingUrls.has(productUrl) || discovered.has(productUrl)) continue;
+        if (added >= source.maxProducts) break;
+
+        try {
+          console.log(`[Discovery] Adding from ${source.name}: ${productUrl}`);
+          const resolvedUrl = await resolveUrl(productUrl);
+          const data = await scrapeProduct(resolvedUrl);
+          const product = {
+            id: uuid(),
+            ...data,
+            url: resolvedUrl,
+            sourceUrl: productUrl,
+            addedAt: new Date().toISOString(),
+            inCart: false,
+            cartAttempts: 0,
+            cartSuccessCount: 0,
+            lastCartAttemptAt: null,
+            lastCartResult: null,
+            purchasePlan: defaultPurchasePlan(),
+            priceHistory: data.price !== null ? [{ price: data.price, at: data.lastChecked }] : [],
+          };
+          storage.addProduct(product);
+          io.emit('product:added', product);
+          existingUrls.add(productUrl);
+          discovered.add(productUrl);
+          added += 1;
+          await new Promise(r => setTimeout(r, 2000));
+        } catch (err) {
+          console.error(`[Discovery] Failed to add ${productUrl}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error(`[Discovery] Failed to fetch ${source.url}:`, err.message);
+    }
+  }
+}
+
+async function startDiscoveryScheduler() {
+  try {
+    await discoverTrendingProducts();
+  } catch (err) {
+    console.error('[Discovery] Initial discovery failed:', err.message);
+  }
+
+  setInterval(() => {
+    discoverTrendingProducts().catch(err => console.error('[Discovery] Scheduled discovery failed:', err.message));
+  }, DISCOVERY_INTERVAL_MINUTES * 60 * 1000);
+}
 
 // ── Seed products ────────────────────────────────────────────────────────────
 
@@ -465,7 +612,7 @@ async function seedProducts() {
 
       console.log(`[Seed] → ${resolvedUrl}`);
 
-      const data    = await scrapeNikeProduct(resolvedUrl);
+      const data    = await scrapeProduct(resolvedUrl);
 
       const product = {
 
@@ -535,9 +682,12 @@ async function start() {
 
     console.log(`\n  SpeedBuyer running → http://localhost:${PORT}\n`);
 
-    // Seed the 3 Nike products after a short boot delay
+    // Seed the 3 Nike products and discover trending releases automatically
 
-    setTimeout(seedProducts, 2000);
+    setTimeout(() => {
+      seedProducts().catch(err => console.error('[Seed] Failed:', err.message));
+      startDiscoveryScheduler();
+    }, 2000);
 
   });
 

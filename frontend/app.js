@@ -1,5 +1,5 @@
 /* =============================================================================
-   SpeedBuyer — Nike Monitor Frontend
+   SpeedBuyer — Release Monitor Frontend
    Single-file JS: state management, Socket.io, API calls, UI rendering
 ============================================================================= */
 
@@ -182,8 +182,8 @@ function buildCardHTML(p) {
     ? `<span class="cart-chip">💼 In Cart</span>`
     : '';
   const accessBadge = p.nikeAccountRequired
-    ? `<span class="status-tag account-required">Nike login required</span>`
-    : `<span class="status-tag account-ok">Nike access OK</span>`;
+    ? `<span class="status-tag account-required">Account access required</span>`
+    : `<span class="status-tag account-ok">Store access OK</span>`;
 
   // Image
   const imgHTML = p.image
@@ -382,8 +382,8 @@ function setNikeAccessStatus(connected, count) {
   if (!pill) return;
   pill.className = `status-pill ${connected ? 'connected' : 'error'}`;
   pill.querySelector('.status-label').textContent = connected
-    ? 'Nike access OK'
-    : `${count} product(s) need Nike login`;
+    ? 'Store access OK'
+    : `${count} product(s) need account access`;
 }
 
 function normalizePurchasePlan(plan = {}) {
@@ -408,8 +408,8 @@ function buildPurchasePlanHTML(product) {
   const target = resolvePlanTarget(product, plan);
   const targetLabel = target
     ? formatReleaseDate(target)
-    : (plan.useReleaseTime ? 'Waiting for Nike release time' : 'No target selected');
-  const modeLabel = plan.useReleaseTime ? 'Nike release time' : 'Manual target';
+    : (plan.useReleaseTime ? 'Waiting for detected release time' : 'No target selected');
+  const modeLabel = plan.useReleaseTime ? 'Store release time' : 'Manual target';
   const sizeLabel = plan.sizeQuantities.length
     ? plan.sizeQuantities.map(entry => `${entry.size} x${entry.quantity}`).join(', ')
     : 'No sizes selected';

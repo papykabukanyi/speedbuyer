@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SpeedBuyer — Nike Monitor</title>
+  <title>SpeedBuyer — Release Monitor</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -13,7 +13,7 @@
   <div class="header-brand">
     <span class="brand-logo">⚡</span>
     <span class="brand-name">SpeedBuyer</span>
-    <span class="brand-sub">Nike Monitor</span>
+    <span class="brand-sub">Release Monitor</span>
   </div>
   <div class="header-center">
     <div class="status-pill" id="conn-status">
@@ -22,7 +22,7 @@
     </div>
     <div class="status-pill" id="nike-access-status">
       <span class="status-dot"></span>
-      <span class="status-label">Nike access unknown</span>
+      <span class="status-label">Store access unknown</span>
     </div>
   </div>
   <div class="header-actions">
@@ -59,7 +59,7 @@
     <div id="empty-state" class="empty-state">
       <div class="empty-icon">👟</div>
       <h2>No products monitored yet</h2>
-      <p>Add a Nike product URL to start tracking price and availability.</p>
+      <p>Trending releases are automatically discovered and added. Manual product entry is optional.</p>
       <button class="btn btn-primary" id="btn-add-empty">+ Add Product</button>
     </div>
     <div id="products-grid" class="products-grid"></div>
@@ -82,14 +82,14 @@
 <div class="modal-overlay" id="modal-add">
   <div class="modal">
     <div class="modal-header">
-      <h2>Add Nike Product</h2>
+      <h2>Add Product</h2>
       <button class="modal-close" data-modal="modal-add">✕</button>
     </div>
     <div class="modal-body">
-      <label class="form-label">Nike Product URL</label>
+      <label class="form-label">Product URL</label>
       <input type="url" class="form-input" id="add-url"
              placeholder="https://www.nike.com/t/air-force-1-07-shoes/CW2288-111" />
-      <p class="form-hint">Paste any Nike product page URL. Prices and sizes will be tracked automatically.</p>
+      <p class="form-hint">Manual URL entry is optional. The dashboard auto-discovers trending releases from supported stores and tracks availability for you.</p>
       <div id="add-error" class="form-error hidden"></div>
     </div>
     <div class="modal-footer">
@@ -115,7 +115,7 @@
         <h3>Monitor</h3>
         <label class="form-label">Check interval (minutes)</label>
         <input type="number" class="form-input" id="set-interval" min="1" max="60" value="5" />
-        <p class="form-hint">Minimum 1 minute. Nike may block too-frequent requests.</p>
+        <p class="form-hint">Minimum 1 minute. Stores may block too-frequent requests.</p>
       </div>
 
       <div class="settings-section">
@@ -229,7 +229,7 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
         </label>
         <label class="toggle-row">
-          <span>Use Nike release time when detected</span>
+          <span>Use detected release time when available</span>
           <input type="checkbox" id="plan-use-release-time" class="toggle-input" />
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
         </label>

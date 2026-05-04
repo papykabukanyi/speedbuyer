@@ -19,19 +19,20 @@ const HEADERS = {
   'Upgrade-Insecure-Requests': '1',
 };
 
-async function scrapeNikeProduct(url) {
+async function scrapeProduct(url) {
   let response;
   try {
     response = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
   } catch (err) {
     const status = err.response?.status;
-    if (status === 403) throw new Error('Nike returned 403 – try again in a few minutes');
+    if (status === 403) throw new Error('Site returned 403 – try again in a few minutes');
     if (status === 404) throw new Error('Product not found (404) – check the URL');
     throw new Error(`Network error: ${err.message}`);
   }
 
   const $ = cheerio.load(response.data);
-  const nikeAccountRequired = detectNikeAccountRequirement($, response.data);
+  const accountRequired = detectNikeAccountRequirement($, response.data);
+  const store = getStoreName(url);
 
   // Detect CAPTCHA / access-denied pages
   const title = $('title').text().toLowerCase();
@@ -44,8 +45,8 @@ async function scrapeNikeProduct(url) {
   if (nextRaw) {
     try {
       const nextData = JSON.parse(nextRaw);
-      const product  = parseNextData(nextData, url, nikeAccountRequired);
-      if (product) return product;
+      const product  = parseNextData(nextData, url, accountRequired);
+      if (product) return { ...product, store };
     } catch {}
   }
 
@@ -57,17 +58,17 @@ async function scrapeNikeProduct(url) {
       if (d['@type'] === 'Product') jsonLd = d;
     } catch {}
   });
-  if (jsonLd) return parseJsonLd(jsonLd, url, nikeAccountRequired);
+  if (jsonLd) return { ...parseJsonLd(jsonLd, url, accountRequired), store };
 
   // ── Fallback: OG / basic HTML ───────────────────────────────────────────────
-  const fallback = parseFallback($, url, nikeAccountRequired);
+  const fallback = parseFallback($, url, accountRequired);
 
   // If name still unknown, derive it from the URL slug (reliable for Nike URLs)
   if (!fallback.name || fallback.name === 'Unknown Product') {
     fallback.name = nameFromSlug(url);
   }
 
-  return fallback;
+  return { ...fallback, store };
 }
 
 // Converts "/t/mind-001-mens-pregame-mules-XXXX/HQ4307-400" → "Nike Mind 001 Men's Pregame Mules"
@@ -166,7 +167,7 @@ function formatProduct(prod, url, root, nikeAccountRequired = false) {
 }
 
 // ── JSON-LD parser ────────────────────────────────────────────────────────────
-function parseJsonLd(data, url, nikeAccountRequired = false) {
+function parseJsonLd(data, url, accountRequired = false) {
   const offer = Array.isArray(data.offers) ? data.offers[0] : data.offers;
   return {
     name          : data.name || nameFromSlug(url),
@@ -186,25 +187,26 @@ function parseJsonLd(data, url, nikeAccountRequired = false) {
 }
 
 // ── Fallback HTML parser ──────────────────────────────────────────────────────
-function parseFallback($, url, nikeAccountRequired = false) {
+function parseFallback($, url, accountRequired = false) {
   const name       = $('h1').first().text().trim() || $('title').text().trim() || 'Unknown Product';
   const ogImage    = $('meta[property="og:image"]').attr('content') || null;
   const priceText  = $('[data-testid="currentPrice-container"]').text() || $('[class*="price"]').first().text();
   const price      = priceText ? parseFloat(priceText.replace(/[^0-9.]/g, '')) || null : null;
   const releaseDate = extractReleaseDateFromHtml($);
 
+  const content = $('body').text().toLowerCase();
   return {
     name,
     price,
     originalPrice : null,
     currency      : 'USD',
-    inStock       : !$('[data-testid="soldout"]').length,
+    inStock       : !$('[data-testid="soldout"]').length && !hasSoldOutText(content),
     availableSizes: [],
     image         : ogImage,
     colorway      : null,
     styleCode     : extractStyleCode(url),
     releaseDate,
-    nikeAccountRequired,
+    nikeAccountRequired: accountRequired,
     url,
     lastChecked   : new Date().toISOString(),
   };
@@ -236,6 +238,27 @@ function detectNikeAccountRequirement($, html) {
   const hasEmailAndPassword = content.includes('email address') && content.includes('password');
 
   return hasLoginForm && hasEmailAndPassword;
+}
+
+function getStoreName(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.includes('nike')) return 'Nike';
+    if (host.includes('adidas')) return 'Adidas';
+    if (host.includes('footlocker') || host.includes('eastbay') || host.includes('champssports')) return 'Foot Locker Network';
+    if (host.includes('finishline')) return 'Finish Line';
+    if (host.includes('stockx')) return 'StockX';
+    if (host.includes('goat')) return 'GOAT';
+    if (host.includes('stadiumgoods')) return 'Stadium Goods';
+    if (host.includes('supremenewyork')) return 'Supreme';
+    return host.replace(/^www\./, '');
+  } catch {
+    return 'Unknown Store';
+  }
+}
+
+function hasSoldOutText(content) {
+  return /(sold out|out of stock|unavailable|sold-out)\b/i.test(content);
 }
 
 function extractStyleCode(url) {
@@ -353,4 +376,4 @@ async function resolveUrl(url) {
   }
 }
 
-module.exports = { scrapeNikeProduct, resolveUrl };
+module.exports = { scrapeProduct, resolveUrl };
