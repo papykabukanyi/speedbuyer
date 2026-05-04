@@ -20,6 +20,10 @@
       <span class="status-dot"></span>
       <span class="status-label">Connecting…</span>
     </div>
+    <div class="status-pill" id="nike-access-status">
+      <span class="status-dot"></span>
+      <span class="status-label">Nike access unknown</span>
+    </div>
   </div>
   <div class="header-actions">
     <button class="btn btn-ghost" id="btn-check-all" title="Check all now">↻ Check All</button>
@@ -141,10 +145,111 @@
         </div>
       </div>
 
+      <div class="settings-section">
+        <h3>Checkout Prep</h3>
+        <p class="form-hint">This stores non-sensitive checkout details only. Full card number and CVV are intentionally not stored.</p>
+        <div class="form-row">
+          <div>
+            <label class="form-label">Full Name</label>
+            <input type="text" class="form-input" id="checkout-full-name" placeholder="Alex Doe" />
+          </div>
+          <div>
+            <label class="form-label">Email</label>
+            <input type="email" class="form-input" id="checkout-email" placeholder="alex@example.com" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label class="form-label">Phone</label>
+            <input type="text" class="form-input" id="checkout-phone" placeholder="(555) 555-5555" />
+          </div>
+          <div>
+            <label class="form-label">Country</label>
+            <input type="text" class="form-input" id="checkout-country" placeholder="US" />
+          </div>
+        </div>
+        <label class="form-label">Address Line 1</label>
+        <input type="text" class="form-input" id="checkout-address1" placeholder="123 Main St" />
+        <label class="form-label">Address Line 2</label>
+        <input type="text" class="form-input" id="checkout-address2" placeholder="Apartment, suite, etc." />
+        <div class="form-row">
+          <div>
+            <label class="form-label">City</label>
+            <input type="text" class="form-input" id="checkout-city" placeholder="Austin" />
+          </div>
+          <div>
+            <label class="form-label">State</label>
+            <input type="text" class="form-input" id="checkout-state" placeholder="TX" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label class="form-label">Postal Code</label>
+            <input type="text" class="form-input" id="checkout-postal" placeholder="78701" />
+          </div>
+          <div>
+            <label class="form-label">Payment Label</label>
+            <input type="text" class="form-input" id="checkout-payment-label" placeholder="Personal Visa" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label class="form-label">Card Brand</label>
+            <input type="text" class="form-input" id="checkout-card-brand" placeholder="Visa" />
+          </div>
+          <div>
+            <label class="form-label">Card Last 4</label>
+            <input type="text" class="form-input" id="checkout-card-last4" placeholder="1234" maxlength="4" />
+          </div>
+        </div>
+      </div>
+
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" data-modal="modal-settings">Cancel</button>
       <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Purchase Plan Modal ────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-plan">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h2>Purchase Plan</h2>
+      <button class="modal-close" data-modal="modal-plan">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="plan-product-id" />
+      <div class="settings-section">
+        <h3 id="plan-product-name">Selected Product</h3>
+        <label class="toggle-row">
+          <span>Enable scheduled release checks</span>
+          <input type="checkbox" id="plan-enabled" class="toggle-input" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+        <label class="toggle-row">
+          <span>Use Nike release time when detected</span>
+          <input type="checkbox" id="plan-use-release-time" class="toggle-input" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+        <label class="form-label">Fallback Target Time</label>
+        <input type="datetime-local" class="form-input" id="plan-target-time" />
+        <p class="form-hint">The monitor will re-check this product every 30 minutes until the detected release time or this fallback target.</p>
+      </div>
+      <div class="settings-section">
+        <div class="modal-inline-header">
+          <h3>Sizes and Quantities</h3>
+          <button class="btn btn-ghost btn-sm" id="btn-plan-add-size" type="button">+ Add Size</button>
+        </div>
+        <div id="plan-size-list" class="plan-size-list"></div>
+        <p class="form-hint">Add multiple sizes and quantities for manual checkout prep.</p>
+      </div>
+      <div id="plan-error" class="form-error hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-modal="modal-plan">Cancel</button>
+      <button class="btn btn-primary" id="btn-save-plan">Save Plan</button>
     </div>
   </div>
 </div>

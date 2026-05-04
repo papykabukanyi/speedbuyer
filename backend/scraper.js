@@ -31,6 +31,7 @@ async function scrapeNikeProduct(url) {
   }
 
   const $ = cheerio.load(response.data);
+  const nikeAccountRequired = detectNikeAccountRequirement($, response.data);
 
   // Detect CAPTCHA / access-denied pages
   const title = $('title').text().toLowerCase();
@@ -43,7 +44,7 @@ async function scrapeNikeProduct(url) {
   if (nextRaw) {
     try {
       const nextData = JSON.parse(nextRaw);
-      const product  = parseNextData(nextData, url);
+      const product  = parseNextData(nextData, url, nikeAccountRequired);
       if (product) return product;
     } catch {}
   }
@@ -56,10 +57,10 @@ async function scrapeNikeProduct(url) {
       if (d['@type'] === 'Product') jsonLd = d;
     } catch {}
   });
-  if (jsonLd) return parseJsonLd(jsonLd, url);
+  if (jsonLd) return parseJsonLd(jsonLd, url, nikeAccountRequired);
 
   // ── Fallback: OG / basic HTML ───────────────────────────────────────────────
-  const fallback = parseFallback($, url);
+  const fallback = parseFallback($, url, nikeAccountRequired);
 
   // If name still unknown, derive it from the URL slug (reliable for Nike URLs)
   if (!fallback.name || fallback.name === 'Unknown Product') {
@@ -89,7 +90,7 @@ function nameFromSlug(url) {
 }
 
 // ── __NEXT_DATA__ parser ──────────────────────────────────────────────────────
-function parseNextData(data, url) {
+function parseNextData(data, url, nikeAccountRequired = false) {
   try {
     const pageProps = data?.props?.pageProps;
     if (!pageProps) return null;
@@ -99,20 +100,20 @@ function parseNextData(data, url) {
     if (threads) {
       const prodMap = threads?.products?.products || threads?.products || {};
       const keys    = Object.keys(prodMap);
-      if (keys.length > 0) return formatProduct(prodMap[keys[0]], url, data);
+      if (keys.length > 0) return formatProduct(prodMap[keys[0]], url, data, nikeAccountRequired);
     }
 
     // Path B – direct product / productInfo
     const direct = pageProps?.product || pageProps?.productInfo;
-    if (direct) return formatProduct(direct, url, data);
+    if (direct) return formatProduct(direct, url, data, nikeAccountRequired);
 
     // Path C – componentProps.productCard
     const card = pageProps?.componentProps?.productCard;
-    if (card) return formatProduct(card, url, data);
+    if (card) return formatProduct(card, url, data, nikeAccountRequired);
 
     // Path D – deep search for "currentPrice" key
     const found = deepFind(data, 'currentPrice');
-    if (found) return formatProduct(found, url, data);
+    if (found) return formatProduct(found, url, data, nikeAccountRequired);
 
     return null;
   } catch {
@@ -130,7 +131,7 @@ function deepFind(obj, key, depth = 0) {
   return null;
 }
 
-function formatProduct(prod, url, root) {
+function formatProduct(prod, url, root, nikeAccountRequired = false) {
   if (!prod) return null;
 
   const skus = prod.skus || prod.availableSkus || [];
@@ -158,13 +159,14 @@ function formatProduct(prod, url, root) {
     colorway     : prod.colorDescription || prod.colorway || null,
     styleCode    : prod.styleColor || prod.productCode || extractStyleCode(url),
     releaseDate,
+    nikeAccountRequired,
     url,
     lastChecked  : new Date().toISOString(),
   };
 }
 
 // ── JSON-LD parser ────────────────────────────────────────────────────────────
-function parseJsonLd(data, url) {
+function parseJsonLd(data, url, nikeAccountRequired = false) {
   const offer = Array.isArray(data.offers) ? data.offers[0] : data.offers;
   return {
     name          : data.name || nameFromSlug(url),
@@ -177,13 +179,14 @@ function parseJsonLd(data, url) {
     colorway      : null,
     styleCode     : extractStyleCode(url),
     releaseDate   : extractReleaseDate(data, null),
+    nikeAccountRequired,
     url,
     lastChecked   : new Date().toISOString(),
   };
 }
 
 // ── Fallback HTML parser ──────────────────────────────────────────────────────
-function parseFallback($, url) {
+function parseFallback($, url, nikeAccountRequired = false) {
   const name       = $('h1').first().text().trim() || $('title').text().trim() || 'Unknown Product';
   const ogImage    = $('meta[property="og:image"]').attr('content') || null;
   const priceText  = $('[data-testid="currentPrice-container"]').text() || $('[class*="price"]').first().text();
@@ -201,12 +204,40 @@ function parseFallback($, url) {
     colorway      : null,
     styleCode     : extractStyleCode(url),
     releaseDate,
+    nikeAccountRequired,
     url,
     lastChecked   : new Date().toISOString(),
   };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function detectNikeAccountRequirement($, html) {
+  const title = $('title').text().toLowerCase();
+  const body = $('body').text().toLowerCase();
+  const content = `${title}\n${body}`;
+
+  const requiredPhrases = [
+    'sign in to continue',
+    'sign in to view',
+    'log in to continue',
+    'log in to view',
+    'nike account required',
+    'sign in required',
+    'to view this product',
+    'sign in for access',
+    'you must sign in',
+  ];
+
+  for (const phrase of requiredPhrases) {
+    if (content.includes(phrase)) return true;
+  }
+
+  const hasLoginForm = $('form[action*="login"]').length > 0 || $('form[action*="signin"]').length > 0;
+  const hasEmailAndPassword = content.includes('email address') && content.includes('password');
+
+  return hasLoginForm && hasEmailAndPassword;
+}
+
 function extractStyleCode(url) {
   const m = url.match(/\/([A-Z0-9]+-[A-Z0-9]+)\/?(\?.*)?$/);
   return m?.[1] || null;

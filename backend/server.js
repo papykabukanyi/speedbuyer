@@ -13,6 +13,7 @@ const path     = require('path');
 
 
 const storage  = require('./storage');
+const checkoutStore = require('./checkoutStore');
 
 const monitor  = require('./monitor');
 
@@ -33,6 +34,59 @@ const server = http.createServer(app);
 const io     = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 
 const PORT   = process.env.PORT || 3001;
+
+function defaultPurchasePlan() {
+
+  return {
+    enabled: false,
+    useReleaseTime: true,
+    targetTime: null,
+    checkEveryMinutes: 30,
+    sizeQuantities: [],
+    lastScheduledCheckAt: null,
+    resolvedTargetTime: null,
+    readyAlertSent: false,
+  };
+
+}
+
+function normalizeIsoDate(value) {
+
+  if (!value) return null;
+  const date = new Date(value);
+  return isNaN(date) ? null : date.toISOString();
+
+}
+
+function sanitizeSizeQuantities(list) {
+
+  if (!Array.isArray(list)) return [];
+  return list
+    .map(entry => ({
+      size: String(entry?.size || '').trim(),
+      quantity: Math.max(1, Math.min(10, parseInt(entry?.quantity) || 1)),
+    }))
+    .filter(entry => entry.size);
+
+}
+
+function sanitizePurchasePlan(input = {}, existing = {}) {
+
+  const current = { ...defaultPurchasePlan(), ...existing };
+
+  return {
+    ...current,
+    enabled: Boolean(input.enabled),
+    useReleaseTime: input.useReleaseTime !== false,
+    targetTime: normalizeIsoDate(input.targetTime),
+    checkEveryMinutes: 30,
+    sizeQuantities: sanitizeSizeQuantities(input.sizeQuantities),
+    lastScheduledCheckAt: current.lastScheduledCheckAt || null,
+    resolvedTargetTime: null,
+    readyAlertSent: false,
+  };
+
+}
 
 
 
@@ -132,6 +186,8 @@ app.post('/api/products', async (req, res) => {
 
       lastCartResult: null,
 
+      purchasePlan: defaultPurchasePlan(),
+
       priceHistory: data.price !== null ? [{ price: data.price, at: data.lastChecked }] : [],
 
     };
@@ -194,6 +250,23 @@ app.post('/api/products/:id/check', async (req, res) => {
 
 
 
+app.put('/api/products/:id/purchase-plan', (req, res) => {
+
+  const product = storage.getProducts().find(p => p.id === req.params.id);
+
+  if (!product) return res.status(404).json({ error: 'Not found' });
+
+  const purchasePlan = sanitizePurchasePlan(req.body || {}, product.purchasePlan);
+  const updated = storage.updateProduct(product.id, { purchasePlan });
+
+  io.emit('product:updated', updated);
+
+  res.json(updated);
+
+});
+
+
+
 app.post('/api/products/:id/cart', async (req, res) => {
 
   const product = storage.getProducts().find(p => p.id === req.params.id);
@@ -232,6 +305,32 @@ app.delete('/api/alerts', (_req, res) => {
   io.emit('alerts:cleared');
 
   res.json({ success: true });
+
+});
+
+
+
+app.get('/api/checkout-profile', async (_req, res) => {
+
+  try {
+    const profile = await checkoutStore.getCheckoutProfile();
+    res.json(profile);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+
+});
+
+
+
+app.put('/api/checkout-profile', async (req, res) => {
+
+  try {
+    const profile = await checkoutStore.saveCheckoutProfile(req.body || {});
+    res.json(profile);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 
 });
 
@@ -295,13 +394,14 @@ app.post('/api/check-all', async (req, res) => {
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
 
   console.log('[Socket] Connected:', socket.id);
 
 
 
   const s = storage.getSettings();
+  const checkoutProfile = await checkoutStore.getCheckoutProfile().catch(() => null);
 
   socket.emit('init', {
 
@@ -310,6 +410,8 @@ io.on('connection', (socket) => {
     alerts  : storage.getAlerts().slice(0, 50),
 
     settings: { ...s, emailPass: s.emailPass ? '***' : '' },
+
+    checkoutProfile,
 
     status  : monitor.getStatus(),
 
@@ -387,6 +489,8 @@ async function seedProducts() {
 
         lastCartResult: null,
 
+        purchasePlan: defaultPurchasePlan(),
+
         priceHistory: data.price !== null ? [{ price: data.price, at: data.lastChecked }] : [],
 
       };
@@ -415,19 +519,31 @@ async function seedProducts() {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-const settings = storage.getSettings();
+async function start() {
 
-monitor.init(io, settings.checkIntervalMinutes);
+  try {
+    await checkoutStore.init();
+  } catch (err) {
+    console.error('[CheckoutStore] Init failed:', err.message);
+  }
+
+  const settings = storage.getSettings();
+
+  monitor.init(io, settings.checkIntervalMinutes);
+
+  server.listen(PORT, () => {
+
+    console.log(`\n  SpeedBuyer running → http://localhost:${PORT}\n`);
+
+    // Seed the 3 Nike products after a short boot delay
+
+    setTimeout(seedProducts, 2000);
+
+  });
+
+}
 
 
 
-server.listen(PORT, () => {
-
-  console.log(`\n  SpeedBuyer running → http://localhost:${PORT}\n`);
-
-  // Seed the 3 Nike products after a short boot delay
-
-  setTimeout(seedProducts, 2000);
-
-});
+start();
 

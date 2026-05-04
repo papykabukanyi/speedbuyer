@@ -9,6 +9,7 @@ const TYPE_EMOJI = {
   SIZE_AVAILABLE: '👟',
   RELEASE_DATE_SET: '📅',
   CART_ADDED    : '🛒',
+  PURCHASE_WINDOW_READY: '⏰',
 };
 
 async function sendAlert(alert) {
@@ -54,6 +55,7 @@ function buildHtml(alert) {
     SIZE_AVAILABLE: '#f59e0b',
     RELEASE_DATE_SET: '#3b82f6',
     CART_ADDED    : '#3b82f6',
+    PURCHASE_WINDOW_READY: '#f59e0b',
   };
   const color = COLOR_MAP[alert.type] || '#6366f1';
   const emoji = TYPE_EMOJI[alert.type] || '🔔';

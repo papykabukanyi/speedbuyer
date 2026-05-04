@@ -6,15 +6,18 @@ const notifier              = require('./notifier');
 let io              = null;
 let activeCronJob   = null;
 let cartCronJob     = null;
+let planCronJob     = null;
 let intervalMinutes = 5;
 let lastCheckTime   = null;
 let lastCartRun     = null;
+let lastPlanRun     = null;
 
 function init(socketIo, minutes = 5) {
   io              = socketIo;
   intervalMinutes = Math.max(1, minutes);
   startCron();
   startCartCron();
+  startPlanCron();
 }
 
 function startCron() {
@@ -31,6 +34,12 @@ function startCartCron() {
   if (cartCronJob) cartCronJob.stop();
   cartCronJob = cron.schedule('*/10 * * * *', () => cartAllProducts());
   console.log('[Monitor] Cart cron active — every 10 minute(s)');
+}
+
+function startPlanCron() {
+  if (planCronJob) planCronJob.stop();
+  planCronJob = cron.schedule('*/30 * * * *', () => runPurchasePlanChecks());
+  console.log('[Monitor] Purchase-plan cron active — every 30 minute(s)');
 }
 
 async function cartAllProducts() {
@@ -55,6 +64,114 @@ async function cartAllProducts() {
 
 async function addToCartNow(product) {
   return cartProduct(product);
+}
+
+async function runPurchasePlanChecks() {
+  const products = storage.getProducts().filter(product => hasActivePurchasePlan(product));
+  if (products.length === 0) return;
+
+  console.log(`[Monitor] Scheduled plan checking ${products.length} product(s)…`);
+  lastPlanRun = new Date().toISOString();
+  if (io) io.emit('monitor:plan-checking', { count: products.length, time: lastPlanRun });
+
+  for (const product of products) {
+    try {
+      await runPurchasePlanCheck(product);
+    } catch (err) {
+      console.error(`[Monitor] Purchase plan error on ${product.id}:`, err.message);
+    }
+    await sleep(1000 + Math.random() * 1500);
+  }
+
+  if (io) io.emit('monitor:plan-done', { time: lastPlanRun });
+}
+
+function hasActivePurchasePlan(product) {
+  const plan = normalizePurchasePlan(product.purchasePlan);
+  return plan.enabled && Boolean(resolvePlanTargetTime(product, plan));
+}
+
+function normalizePurchasePlan(plan) {
+  return {
+    enabled: false,
+    useReleaseTime: true,
+    targetTime: null,
+    checkEveryMinutes: 30,
+    sizeQuantities: [],
+    lastScheduledCheckAt: null,
+    resolvedTargetTime: null,
+    readyAlertSent: false,
+    ...plan,
+  };
+}
+
+function resolvePlanTargetTime(product, plan) {
+  if (plan.useReleaseTime && product.releaseDate) return product.releaseDate;
+  return plan.targetTime || null;
+}
+
+async function runPurchasePlanCheck(product) {
+  const nowIso = new Date().toISOString();
+  const plan = normalizePurchasePlan(product.purchasePlan);
+  const targetIso = resolvePlanTargetTime(product, plan);
+  if (!targetIso) return null;
+
+  const targetDate = new Date(targetIso);
+  if (isNaN(targetDate)) return null;
+
+  const nextPlan = {
+    ...plan,
+    lastScheduledCheckAt: nowIso,
+    resolvedTargetTime: targetDate.toISOString(),
+  };
+
+  storage.updateProduct(product.id, { purchasePlan: nextPlan });
+  if (io) io.emit('product:updated', { id: product.id, purchasePlan: nextPlan });
+
+  const result = await checkProduct({ ...product, purchasePlan: nextPlan });
+
+  if (targetDate.getTime() > Date.now() || nextPlan.readyAlertSent) {
+    return result;
+  }
+
+  const alert = {
+    productId      : product.id,
+    productName    : result?.product?.name || product.name,
+    url            : product.url,
+    type           : 'PURCHASE_WINDOW_READY',
+    message        : buildPurchaseWindowMessage(result?.product || product, nextPlan),
+    oldValue       : targetIso,
+    newValue       : targetIso,
+    timestamp      : nowIso,
+    productImage   : result?.product?.image || product.image,
+    productPrice   : result?.product?.price ?? product.price,
+    productColorway: result?.product?.colorway || product.colorway,
+    productSizes   : result?.product?.availableSizes || product.availableSizes,
+    productStyleCode: result?.product?.styleCode || product.styleCode,
+    productReleaseDate: result?.product?.releaseDate || product.releaseDate,
+  };
+
+  const saved = storage.addAlert(alert);
+  notifier.sendAlert(saved);
+  if (io) io.emit('alert:new', saved);
+
+  const readyPlan = { ...nextPlan, readyAlertSent: true };
+  storage.updateProduct(product.id, { purchasePlan: readyPlan });
+  if (io) io.emit('product:updated', { id: product.id, purchasePlan: readyPlan });
+
+  return result;
+}
+
+function buildPurchaseWindowMessage(product, plan) {
+  const selections = Array.isArray(plan.sizeQuantities)
+    ? plan.sizeQuantities.map(entry => `${entry.size} x${entry.quantity}`).join(', ')
+    : '';
+
+  if (selections) {
+    return `Purchase window reached. Check manual checkout for ${selections}.`;
+  }
+
+  return `Purchase window reached for ${product.name}. Check manual checkout now.`;
 }
 
 async function cartProduct(product) {
@@ -260,7 +377,13 @@ function setCheckInterval(minutes) {
 }
 
 function getStatus() {
-  return { intervalMinutes, lastCheckTime, products: storage.getProducts().length };
+  return {
+    intervalMinutes,
+    lastCheckTime,
+    lastCartRun,
+    lastPlanRun,
+    products: storage.getProducts().length,
+  };
 }
 
 function sleep(ms) {

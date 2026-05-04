@@ -10,7 +10,9 @@ const state = {
   products  : [],   // { id, name, price, inStock, availableSizes, image, ... }
   alerts    : [],   // { id, type, message, productName, timestamp, ... }
   settings  : {},
+  checkoutProfile: {},
   status    : {},
+  planProductId: null,
   checking  : new Set(), // product IDs currently being force-checked
 };
 
@@ -29,10 +31,11 @@ socket.on('connect_error', () => {
   setConnStatus('error', 'Cannot connect');
 });
 
-socket.on('init', ({ products, alerts, settings, status }) => {
+socket.on('init', ({ products, alerts, settings, status, checkoutProfile }) => {
   state.products = products || [];
   state.alerts   = alerts   || [];
   state.settings = settings || {};
+  state.checkoutProfile = checkoutProfile || {};
   state.status   = status   || {};
   renderAll();
   applySettingsToForm();
@@ -160,6 +163,7 @@ function buildCardHTML(p) {
   }
 
   const releaseHTML = p.releaseDate ? buildReleaseHTML(p.releaseDate) : '';
+  const planHTML = buildPurchasePlanHTML(p);
 
   // Size chips
   let sizesHTML = '';
@@ -177,6 +181,9 @@ function buildCardHTML(p) {
   const cartBadge = p.inCart
     ? `<span class="cart-chip">💼 In Cart</span>`
     : '';
+  const accessBadge = p.nikeAccountRequired
+    ? `<span class="status-tag account-required">Nike login required</span>`
+    : `<span class="status-tag account-ok">Nike access OK</span>`;
 
   // Image
   const imgHTML = p.image
@@ -196,15 +203,18 @@ function buildCardHTML(p) {
       ${p.styleCode ? `<span>${escHtml(p.styleCode)}</span>` : ''}
       ${p.colorway  ? ` · <span>${escHtml(p.colorway)}</span>` : ''}
       ${cartBadge}
+      ${accessBadge}
       ${p.cartAttempts ? ` · <span class="cart-meta-text">${p.cartAttempts} attempts / ${p.cartSuccessCount || 0} success</span>` : ''}
     </div>
     ${priceHTML}
     ${releaseHTML}
+    ${planHTML}
     ${errorHTML}
     ${sizesHTML}
     <div class="card-footer">
       <span class="card-last-check">${p.lastChecked ? 'Checked ' + timeAgo(p.lastChecked) : 'Not checked yet'}</span>
       <div class="card-actions">
+        <button class="btn btn-ghost btn-sm btn-plan" data-id="${p.id}" title="Purchase plan">🗓 Plan</button>
         ${p.inCart ? '<button class="btn btn-ghost btn-sm" disabled title="Already in cart">💼 In Cart</button>' : `<button class="btn btn-ghost btn-sm btn-add-cart" data-id="${p.id}" title="Add to cart">🛒 Add to Cart</button>`}
         <button class="btn btn-ghost btn-sm btn-check-now" data-id="${p.id}" ${checking ? 'disabled' : ''} title="Check now">↻</button>
         <button class="btn btn-danger btn-sm btn-remove" data-id="${p.id}" title="Remove">✕</button>
@@ -217,6 +227,10 @@ function buildCardHTML(p) {
 function attachCardHandlers(id) {
   const card = el(`card-${id}`);
   if (!card) return;
+
+  card.querySelector('.btn-plan')?.addEventListener('click', () => {
+    openPlanModal(id);
+  });
 
   card.querySelector('.btn-check-now')?.addEventListener('click', async () => {
     state.checking.add(id);
@@ -320,6 +334,7 @@ const ALERT_LABELS = {
   SIZE_AVAILABLE: '👟 New Sizes',
   RELEASE_DATE_SET: '📅 Release Date',
   CART_ADDED    : '🛒 Added to Cart',
+  PURCHASE_WINDOW_READY: '⏰ Purchase Window',
 };
 
 function buildAlertHTML(a) {
@@ -340,6 +355,9 @@ function updateStats() {
   el('stat-cart-successes').textContent = state.products.reduce((sum, p) => sum + (p.cartSuccessCount || 0), 0);
   el('stat-cart-attempts').textContent = state.products.reduce((sum, p) => sum + (p.cartAttempts || 0), 0);
 
+  const accountNeeded = state.products.filter(p => p.nikeAccountRequired).length;
+  setNikeAccessStatus(accountNeeded === 0, accountNeeded);
+
   const today  = new Date().toDateString();
   const todayAlerts = state.alerts.filter(a => new Date(a.timestamp).toDateString() === today).length;
   el('stat-alerts').textContent = todayAlerts;
@@ -357,6 +375,156 @@ function setConnStatus(cls, label) {
   const pill = el('conn-status');
   pill.className = `status-pill ${cls}`;
   pill.querySelector('.status-label').textContent = label;
+}
+
+function setNikeAccessStatus(connected, count) {
+  const pill = el('nike-access-status');
+  if (!pill) return;
+  pill.className = `status-pill ${connected ? 'connected' : 'error'}`;
+  pill.querySelector('.status-label').textContent = connected
+    ? 'Nike access OK'
+    : `${count} product(s) need Nike login`;
+}
+
+function normalizePurchasePlan(plan = {}) {
+  return {
+    enabled: false,
+    useReleaseTime: true,
+    targetTime: '',
+    sizeQuantities: [],
+    ...plan,
+  };
+}
+
+function resolvePlanTarget(product, plan) {
+  if (plan.useReleaseTime && product.releaseDate) return product.releaseDate;
+  return plan.targetTime || '';
+}
+
+function buildPurchasePlanHTML(product) {
+  const plan = normalizePurchasePlan(product.purchasePlan);
+  if (!plan.enabled) return '';
+
+  const target = resolvePlanTarget(product, plan);
+  const targetLabel = target
+    ? formatReleaseDate(target)
+    : (plan.useReleaseTime ? 'Waiting for Nike release time' : 'No target selected');
+  const modeLabel = plan.useReleaseTime ? 'Nike release time' : 'Manual target';
+  const sizeLabel = plan.sizeQuantities.length
+    ? plan.sizeQuantities.map(entry => `${entry.size} x${entry.quantity}`).join(', ')
+    : 'No sizes selected';
+
+  return `
+  <div class="purchase-plan-summary">
+    <div class="plan-summary-label">Plan</div>
+    <div class="plan-summary-line">${escHtml(modeLabel)}: ${escHtml(targetLabel)}</div>
+    <div class="plan-summary-line">${escHtml(sizeLabel)}</div>
+    <div class="plan-summary-line">30-minute checks until target</div>
+  </div>`;
+}
+
+function openPlanModal(productId) {
+  const product = state.products.find(item => item.id === productId);
+  if (!product) return;
+
+  state.planProductId = productId;
+  const plan = normalizePurchasePlan(product.purchasePlan);
+
+  setVal('plan-product-id', productId);
+  el('plan-product-name').textContent = product.name;
+  setChecked('plan-enabled', plan.enabled);
+  setChecked('plan-use-release-time', plan.useReleaseTime);
+  setVal('plan-target-time', toDateTimeLocalValue(plan.targetTime || ''));
+  renderPlanSizeRows(plan.sizeQuantities);
+  el('plan-error').classList.add('hidden');
+  el('plan-error').textContent = '';
+  togglePlanTargetInput();
+  el('modal-plan').classList.add('open');
+}
+
+function renderPlanSizeRows(items = []) {
+  const list = el('plan-size-list');
+  list.innerHTML = '';
+
+  const entries = items.length > 0 ? items : [{ size: '', quantity: 1 }];
+  entries.forEach(entry => addPlanSizeRow(entry.size, entry.quantity));
+}
+
+function addPlanSizeRow(size = '', quantity = 1) {
+  const row = document.createElement('div');
+  row.className = 'plan-size-row';
+  row.innerHTML = `
+    <input type="text" class="form-input plan-size-input" placeholder="Size" value="${escHtml(size)}" />
+    <input type="number" class="form-input plan-qty-input" min="1" max="10" value="${Math.max(1, quantity || 1)}" />
+    <button type="button" class="btn btn-danger btn-sm btn-plan-remove">✕</button>
+  `;
+  el('plan-size-list').appendChild(row);
+}
+
+function collectPlanSizeRows() {
+  return Array.from(document.querySelectorAll('.plan-size-row'))
+    .map(row => ({
+      size: row.querySelector('.plan-size-input')?.value.trim() || '',
+      quantity: Math.max(1, parseInt(row.querySelector('.plan-qty-input')?.value) || 1),
+    }))
+    .filter(entry => entry.size);
+}
+
+function togglePlanTargetInput() {
+  const useReleaseTime = el('plan-use-release-time').checked;
+  el('plan-target-time').disabled = useReleaseTime;
+}
+
+async function savePurchasePlan() {
+  const productId = state.planProductId || el('plan-product-id').value;
+  const errorEl = el('plan-error');
+  const payload = {
+    enabled: el('plan-enabled').checked,
+    useReleaseTime: el('plan-use-release-time').checked,
+    targetTime: fromDateTimeLocalValue(el('plan-target-time').value),
+    sizeQuantities: collectPlanSizeRows(),
+  };
+
+  if (payload.enabled && !payload.useReleaseTime && !payload.targetTime) {
+    errorEl.textContent = 'Choose a fallback target time or enable release-time mode.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/api/products/${productId}/purchase-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const updated = await res.json();
+    if (!res.ok) throw new Error(updated.error || 'Save failed');
+
+    const idx = state.products.findIndex(item => item.id === updated.id);
+    if (idx !== -1) {
+      state.products[idx] = updated;
+      renderProductCard(updated);
+    }
+    closeModal('modal-plan');
+    toast('success', 'Purchase plan saved', updated.name);
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.classList.remove('hidden');
+  }
+}
+
+function toDateTimeLocalValue(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (isNaN(date)) return '';
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromDateTimeLocalValue(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return isNaN(date) ? null : date.toISOString();
 }
 
 // ── Add product ───────────────────────────────────────────────────────────────
@@ -413,6 +581,7 @@ function setAddLoading(loading) {
 // ── Settings ──────────────────────────────────────────────────────────────────
 function applySettingsToForm() {
   const s = state.settings;
+  const profile = state.checkoutProfile || {};
   setVal('set-interval',     s.checkIntervalMinutes ?? 5);
   setChecked('set-email-enabled', s.emailEnabled ?? false);
   setVal('set-email-host',   s.emailHost   || 'smtp.gmail.com');
@@ -420,7 +589,36 @@ function applySettingsToForm() {
   setVal('set-email-user',   s.emailUser   || '');
   setVal('set-email-pass',   s.emailPass   || '');
   setVal('set-email-to',     s.emailTo     || '');
+  setVal('checkout-full-name', profile.fullName || '');
+  setVal('checkout-email', profile.email || '');
+  setVal('checkout-phone', profile.phone || '');
+  setVal('checkout-address1', profile.address1 || '');
+  setVal('checkout-address2', profile.address2 || '');
+  setVal('checkout-city', profile.city || '');
+  setVal('checkout-state', profile.state || '');
+  setVal('checkout-postal', profile.postalCode || '');
+  setVal('checkout-country', profile.country || 'US');
+  setVal('checkout-payment-label', profile.paymentLabel || '');
+  setVal('checkout-card-brand', profile.cardBrand || '');
+  setVal('checkout-card-last4', profile.cardLast4 || '');
   updateEmailFieldsVisibility();
+}
+
+function collectCheckoutProfile() {
+  return {
+    fullName: el('checkout-full-name').value.trim(),
+    email: el('checkout-email').value.trim(),
+    phone: el('checkout-phone').value.trim(),
+    address1: el('checkout-address1').value.trim(),
+    address2: el('checkout-address2').value.trim(),
+    city: el('checkout-city').value.trim(),
+    state: el('checkout-state').value.trim(),
+    postalCode: el('checkout-postal').value.trim(),
+    country: el('checkout-country').value.trim(),
+    paymentLabel: el('checkout-payment-label').value.trim(),
+    cardBrand: el('checkout-card-brand').value.trim(),
+    cardLast4: el('checkout-card-last4').value.trim(),
+  };
 }
 
 function updateEmailFieldsVisibility() {
@@ -438,17 +636,26 @@ async function saveSettings() {
     emailPass           : el('set-email-pass').value,
     emailTo             : el('set-email-to').value.trim(),
   };
+  const checkoutProfile = collectCheckoutProfile();
 
   try {
-    const res = await fetch(`${API}/api/settings`, {
-      method : 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify(settings),
-    });
+    const [settingsRes, checkoutRes] = await Promise.all([
+      fetch(`${API}/api/settings`, {
+        method : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify(settings),
+      }),
+      fetch(`${API}/api/checkout-profile`, {
+        method : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify(checkoutProfile),
+      }),
+    ]);
 
-    if (!res.ok) throw new Error('Save failed');
+    if (!settingsRes.ok || !checkoutRes.ok) throw new Error('Save failed');
 
     state.settings = { ...state.settings, ...settings, emailPass: settings.emailPass ? '***' : '' };
+    state.checkoutProfile = await checkoutRes.json();
     updateStats();
     closeModal('modal-settings');
     toast('success', 'Settings saved', 'Check interval updated');
@@ -476,7 +683,7 @@ function requestNotificationPermission() {
 
 function showBrowserNotification(alert) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const icon = { PRICE_DROP: '📉', PRICE_RISE: '📈', BACK_IN_STOCK: '✅', OUT_OF_STOCK: '❌', SIZE_AVAILABLE: '👟', RELEASE_DATE_SET: '📅', CART_ADDED: '🛒' }[alert.type] || '🔔';
+  const icon = { PRICE_DROP: '📉', PRICE_RISE: '📈', BACK_IN_STOCK: '✅', OUT_OF_STOCK: '❌', SIZE_AVAILABLE: '👟', RELEASE_DATE_SET: '📅', CART_ADDED: '🛒', PURCHASE_WINDOW_READY: '⏰' }[alert.type] || '🔔';
   const n = new Notification(`${icon} ${alert.type.replace(/_/g, ' ')}`, {
     body: `${alert.message}\n${alert.productName}`,
     tag : alert.productId,
@@ -540,6 +747,16 @@ function wireEvents() {
   el('btn-save-settings').addEventListener('click', saveSettings);
 
   el('btn-check-all').addEventListener('click', checkAll);
+
+  el('btn-save-plan').addEventListener('click', savePurchasePlan);
+  el('btn-plan-add-size').addEventListener('click', () => addPlanSizeRow());
+  el('plan-use-release-time').addEventListener('change', togglePlanTargetInput);
+  el('plan-size-list').addEventListener('click', e => {
+    const btn = e.target.closest('.btn-plan-remove');
+    if (!btn) return;
+    btn.closest('.plan-size-row')?.remove();
+    if (!document.querySelector('.plan-size-row')) addPlanSizeRow();
+  });
 
   el('btn-clear-alerts').addEventListener('click', async () => {
     await fetch(`${API}/api/alerts`, { method: 'DELETE' });
