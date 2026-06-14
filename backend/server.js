@@ -1,3 +1,5 @@
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+
 const express  = require('express');
 
 const http     = require('http');
@@ -476,7 +478,7 @@ function isSupportedProductUrl(urlString) {
     if (path.includes('/cart') || path.includes('/privacy') || path.includes('/login') || path.includes('/account')) return false;
 
     const matchers = [
-      { host: /nike/, regex: /(\/t\/|\/launch\/|\/shoe\/|\/product\/)/ },
+      { host: /nike/, regex: /(\/t\/|\/launch\/t\/)/ },
       { host: /adidas/, regex: /(\/product\/|\/confirmed\/|\/launch\/|\/sneakers\/)/ },
       { host: /footlocker|eastbay|champssports/, regex: /(\/product\/|\/sku\/|\/shoe\/|\/new-arrivals|\/launches)/ },
       { host: /finishline/, regex: /(\/product\/|\/sku\/|\/sneakers\/)/ },

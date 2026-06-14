@@ -102,7 +102,9 @@ function clearAlerts() { saveAlerts([]); }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function getSettings()       { return { ...DEFAULT_SETTINGS, ...readJson(SETTINGS_FILE, {}), ...getEnvSettings() }; }
-function saveSettings(patch) { writeJson(SETTINGS_FILE, { ...getSettings(), ...patch }); }
+
+// Persist only file-level settings — never write env-provided secrets (e.g. email creds) back to disk
+function saveSettings(patch) { writeJson(SETTINGS_FILE, { ...DEFAULT_SETTINGS, ...readJson(SETTINGS_FILE, {}), ...patch }); }
 
 module.exports = {
   getProducts, addProduct, updateProduct, removeProduct,
