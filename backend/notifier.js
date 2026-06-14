@@ -12,26 +12,34 @@ const TYPE_EMOJI = {
   PURCHASE_WINDOW_READY: '⏰',
 };
 
+function createTransport(settings) {
+  return nodemailer.createTransport({
+    host  : settings.emailHost,
+    port  : settings.emailPort,
+    secure: settings.emailPort === 465,
+    auth  : { user: settings.emailUser, pass: settings.emailPass },
+  });
+}
+
+function getEmailRecipients(settings) {
+  return settings.emailTo
+    .split(',')
+    .map(e => e.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
 async function sendAlert(alert) {
   console.log(`[Alert] ${TYPE_EMOJI[alert.type] || '🔔'} ${alert.message}`);
 
   const settings = storage.getSettings();
   if (!settings.emailEnabled || !settings.emailTo || !settings.emailUser || !settings.emailPass) return;
 
-  // Support comma-separated recipient list
-  const recipients = settings.emailTo
-    .split(',')
-    .map(e => e.trim())
-    .filter(Boolean)
-    .join(', ');
+  const recipients = getEmailRecipients(settings);
+  if (!recipients) return;
 
   try {
-    const transport = nodemailer.createTransport({
-      host  : settings.emailHost,
-      port  : settings.emailPort,
-      secure: settings.emailPort === 465,
-      auth  : { user: settings.emailUser, pass: settings.emailPass },
-    });
+    const transport = createTransport(settings);
 
     await transport.sendMail({
       from   : `"SpeedBuyer Monitor" <${settings.emailUser}>`,
@@ -43,6 +51,67 @@ async function sendAlert(alert) {
     console.log(`[Alert] Email sent → ${recipients}`);
   } catch (err) {
     console.error('[Alert] Email failed:', err.message);
+  }
+}
+
+async function sendDiscoverySummary(products) {
+  if (!Array.isArray(products) || products.length === 0) return;
+
+  const settings = storage.getSettings();
+  if (!settings.emailEnabled || !settings.emailTo || !settings.emailUser || !settings.emailPass) return;
+
+  const recipients = getEmailRecipients(settings);
+  if (!recipients) return;
+
+  const rows = products.map(product => {
+    const release = product.releaseDate ? formatReleaseDate(product.releaseDate) : 'Release date unknown';
+    const store = product.store || 'Store';
+    return `
+      <tr style="border-bottom:1px solid #333;">
+        <td style="padding:12px 8px;vertical-align:top;font-size:14px;color:#fff;"><a href="${product.url}" style="color:#60a5fa;text-decoration:none;font-weight:700;">${product.name || product.styleCode || product.url}</a></td>
+        <td style="padding:12px 8px;vertical-align:top;font-size:14px;color:#ddd;">${store}</td>
+        <td style="padding:12px 8px;vertical-align:top;font-size:14px;color:#ddd;">${release}</td>
+      </tr>`;
+  }).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+    <body style="margin:0;padding:20px;background:#0a0a0a;font-family:Arial,Helvetica,sans-serif;color:#fff;">
+      <div style="max-width:700px;margin:0 auto;background:#111;border-radius:14px;overflow:hidden;border:1px solid #222;">
+        <div style="background:#0d0d0d;padding:22px 28px;border-bottom:2px solid #f59e0b;">
+          <h1 style="margin:0;font-size:24px;font-weight:900;color:#fff;">SpeedBuyer Trending Releases</h1>
+          <p style="margin:8px 0 0;color:#aaa;font-size:14px;">New hot releases discovered. Open the links below to view the latest drops before they sell out.</p>
+        </div>
+        <div style="padding:20px 28px;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:12px 8px;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;">Product</th>
+                <th style="text-align:left;padding:12px 8px;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;">Store</th>
+                <th style="text-align:left;padding:12px 8px;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;">Release Date</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div style="background:#0d0d0d;padding:16px 28px;border-top:1px solid #222;color:#777;font-size:12px;">This email is generated automatically by SpeedBuyer. Track hot drops and release windows in the dashboard.</div>
+      </div>
+    </body>
+    </html>`;
+
+  try {
+    const transport = createTransport(settings);
+    await transport.sendMail({
+      from   : `"SpeedBuyer Monitor" <${settings.emailUser}>`,
+      to     : recipients,
+      subject: `[SpeedBuyer] New hot release discoveries (${products.length})`,
+      html,
+    });
+    console.log(`[Alert] Discovery summary email sent → ${recipients}`);
+  } catch (err) {
+    console.error('[Alert] Discovery email failed:', err.message);
   }
 }
 
@@ -165,4 +234,4 @@ function formatReleaseDate(iso) {
   }
 }
 
-module.exports = { sendAlert };
+module.exports = { sendAlert, sendDiscoverySummary };

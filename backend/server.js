@@ -19,6 +19,7 @@ const cheerio  = require('cheerio');
 
 const storage  = require('./storage');
 const checkoutStore = require('./checkoutStore');
+const notifier = require('./notifier');
 
 const monitor  = require('./monitor');
 
@@ -476,11 +477,12 @@ function isSupportedProductUrl(urlString) {
 
     if (!ALLOWED_HOSTS.some(h => host === h || host.endsWith('.' + h))) return false;
     if (path.includes('/cart') || path.includes('/privacy') || path.includes('/login') || path.includes('/account')) return false;
+    if (path.includes('/category/') || path.includes('/collections/')) return false;
 
     const matchers = [
       { host: /nike/, regex: /(\/t\/|\/launch\/t\/)/ },
       { host: /adidas/, regex: /(\/product\/|\/confirmed\/|\/launch\/|\/sneakers\/)/ },
-      { host: /footlocker|eastbay|champssports/, regex: /(\/product\/|\/sku\/|\/shoe\/|\/new-arrivals|\/launches)/ },
+      { host: /footlocker|eastbay|champssports/, regex: /(\/product\/|\/sku\/|\/shoe\/)/ },
       { host: /finishline/, regex: /(\/product\/|\/sku\/|\/sneakers\/)/ },
       { host: /stockx/, regex: /\/sneakers\// },
       { host: /goat/, regex: /\/p\// },
@@ -492,7 +494,7 @@ function isSupportedProductUrl(urlString) {
       if (item.host.test(host) && item.regex.test(path)) return true;
     }
 
-    return /(\/product|\/sneakers|\/shoe|\/t\/|\/p\/|\/products\/|\/item\/)/.test(path);
+    return /(\/product|\/sneakers|\/shoe\/|\/t\/|\/p\/|\/products\/|\/item\/)/.test(path);
   } catch {
     return false;
   }
@@ -513,10 +515,23 @@ function extractProductLinks(html, baseUrl) {
   return [...urls];
 }
 
+function isHotDiscovery(product) {
+  if (!product) return false;
+  if (product.inStock) return true;
+  if (!product.releaseDate) return false;
+
+  const target = new Date(product.releaseDate);
+  if (isNaN(target)) return false;
+
+  const msUntil = target.getTime() - Date.now();
+  return msUntil >= 0 && msUntil <= 14 * 24 * 60 * 60 * 1000;
+}
+
 async function discoverTrendingProducts() {
   const existing = storage.getProducts();
   const existingUrls = new Set(existing.map(p => p.sourceUrl || p.url));
   const discovered = new Set();
+  const hotReleases = [];
 
   for (const source of DISCOVERY_SOURCES) {
     try {
@@ -538,6 +553,7 @@ async function discoverTrendingProducts() {
             url: resolvedUrl,
             sourceUrl: productUrl,
             addedAt: new Date().toISOString(),
+            discoveredAt: new Date().toISOString(),
             inCart: false,
             cartAttempts: 0,
             cartSuccessCount: 0,
@@ -546,11 +562,17 @@ async function discoverTrendingProducts() {
             purchasePlan: defaultPurchasePlan(),
             priceHistory: data.price !== null ? [{ price: data.price, at: data.lastChecked }] : [],
           };
+
           storage.addProduct(product);
           io.emit('product:added', product);
           existingUrls.add(productUrl);
           discovered.add(productUrl);
           added += 1;
+
+          if (isHotDiscovery(product)) {
+            hotReleases.push(product);
+          }
+
           await new Promise(r => setTimeout(r, 2000));
         } catch (err) {
           console.error(`[Discovery] Failed to add ${productUrl}:`, err.message);
@@ -559,6 +581,10 @@ async function discoverTrendingProducts() {
     } catch (err) {
       console.error(`[Discovery] Failed to fetch ${source.url}:`, err.message);
     }
+  }
+
+  if (hotReleases.length > 0) {
+    await notifier.sendDiscoverySummary(hotReleases);
   }
 }
 
