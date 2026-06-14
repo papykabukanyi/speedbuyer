@@ -1,843 +1,480 @@
 /* =============================================================================
-   SpeedBuyer — Release Monitor Frontend
-   Single-file JS: state management, Socket.io, API calls, UI rendering
+   SpeedBuyer — Minimal Dashboard
 ============================================================================= */
-
 const API = window.location.protocol === 'file:' ? 'http://localhost:3001' : '';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
-  products  : [],   // { id, name, price, inStock, availableSizes, image, ... }
-  alerts    : [],   // { id, type, message, productName, timestamp, ... }
-  settings  : {},
+  products: [],
+  settings: {},
   checkoutProfile: {},
-  status    : {},
-  planProductId: null,
-  checking  : new Set(), // product IDs currently being force-checked
+  checking: new Set(),
+  carting:  new Set(),
+  checkoutReady: {},  // productId → checkout:ready payload
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const el = id => document.getElementById(id);
+const escHtml = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 const socket = io(API, { transports: ['websocket', 'polling'] });
 
-socket.on('connect', () => {
-  setConnStatus('connected', 'Live');
-});
+socket.on('connect',       ()  => setConn('connected', 'Live'));
+socket.on('disconnect',    ()  => setConn('error', 'Disconnected'));
+socket.on('connect_error', ()  => setConn('error', 'Cannot connect'));
 
-socket.on('disconnect', () => {
-  setConnStatus('error', 'Disconnected');
-});
-
-socket.on('connect_error', () => {
-  setConnStatus('error', 'Cannot connect');
-});
-
-socket.on('init', ({ products, alerts, settings, status, checkoutProfile }) => {
-  state.products = products || [];
-  state.alerts   = alerts   || [];
-  state.settings = settings || {};
+socket.on('init', ({ products, settings, checkoutProfile }) => {
+  state.products        = sortProducts(products || []);
+  state.settings        = settings       || {};
   state.checkoutProfile = checkoutProfile || {};
-  state.status   = status   || {};
   renderAll();
+  applyProfileToForm();
   applySettingsToForm();
 });
 
 socket.on('product:added', product => {
-  state.products.push(product);
-  renderProducts();
-  updateStats();
-  toast('success', 'Product added', product.name);
+  if (!state.products.find(p => p.id === product.id)) state.products.push(product);
+  state.products = sortProducts(state.products);
+  renderAll();
+  toast('success', 'Product added', product.name || product.url);
 });
 
 socket.on('product:updated', data => {
   const idx = state.products.findIndex(p => p.id === data.id);
-  if (idx !== -1) {
-    state.products[idx] = { ...state.products[idx], ...data };
-    renderProductCard(state.products[idx]);
-  }
+  if (idx !== -1) state.products[idx] = { ...state.products[idx], ...data };
+  state.products = sortProducts(state.products);
   state.checking.delete(data.id);
-  updateStats();
+  renderAll();
 });
 
 socket.on('product:removed', ({ id }) => {
   state.products = state.products.filter(p => p.id !== id);
-  document.getElementById(`card-${id}`)?.remove();
-  updateStats();
-  if (state.products.length === 0) showEmptyState();
-});
-
-socket.on('product:error', ({ id, error }) => {
-  state.checking.delete(id);
-  const idx = state.products.findIndex(p => p.id === id);
-  if (idx !== -1) {
-    state.products[idx].lastError = error;
-    renderProductCard(state.products[idx]);
-  }
-  toast('error', 'Scrape error', error);
+  renderAll();
 });
 
 socket.on('alert:new', alert => {
-  state.alerts.unshift(alert);
-  prependAlertItem(alert);
-  updateStats();
-  flashCard(alert.productId);
-  // Browser notification
-  showBrowserNotification(alert);
-});
-
-socket.on('alerts:cleared', () => {
-  state.alerts = [];
-  renderAlerts();
-  updateStats();
-});
-
-socket.on('monitor:checking', ({ count, time }) => {
-  state.status.lastCheckTime = time;
-  updateStats();
-  el('stat-last-check').textContent = 'Checking…';
-});
-
-socket.on('monitor:done', ({ time }) => {
-  state.status.lastCheckTime = time;
-  updateStats();
-});
-
-// ── Render all ────────────────────────────────────────────────────────────────
-function renderAll() {
-  renderProducts();
-  renderAlerts();
-  updateStats();
-}
-
-// ── Products ──────────────────────────────────────────────────────────────────
-function renderProducts() {
-  const grid = el('products-grid');
-  grid.innerHTML = '';
-
-  if (state.products.length === 0) {
-    showEmptyState();
-    return;
+  const row = el(`row-${alert.productId}`);
+  if (row) row.classList.add('flash'), setTimeout(() => row.classList.remove('flash'), 1100);
+  if (alert.type === 'BACK_IN_STOCK' || alert.type === 'RELEASE_DATE_SET') {
+    toast('success', alert.type.replace(/_/g, ' '), alert.message);
   }
+  if (alert.type === 'CART_ADDED') {
+    toast('success', 'In Cart', alert.message);
+  }
+});
 
-  hideEmptyState();
-  state.products.forEach(p => {
-    const div = document.createElement('div');
-    div.innerHTML = buildCardHTML(p);
-    grid.appendChild(div.firstElementChild);
-    attachCardHandlers(p.id);
+socket.on('checkout:ready', data => {
+  state.checkoutReady[data.productId] = data;
+  state.products = sortProducts(state.products);
+  renderAll();
+  const sizesLabel = (data.selectedSizes || []).map(s => `${s.size} x${s.quantity}`).join(', ');
+  toast('success', 'Checkout Ready', `${data.productName} — ${sizesLabel || '1 item'}`);
+});
+
+// ── Sort ──────────────────────────────────────────────────────────────────────
+function sortProducts(products) {
+  const now = Date.now();
+  return [...products].sort((a, b) => {
+    const aUp = a.releaseDate && new Date(a.releaseDate) > now;
+    const bUp = b.releaseDate && new Date(b.releaseDate) > now;
+    if (aUp && !bUp) return -1;
+    if (!aUp && bUp) return  1;
+    if (aUp && bUp)  return new Date(a.releaseDate) - new Date(b.releaseDate);
+    if (a.inStock && !b.inStock) return -1;
+    if (!a.inStock && b.inStock) return  1;
+    return 0;
   });
 }
 
-function renderProductCard(product) {
-  const existing = el(`card-${product.id}`);
-  const html     = buildCardHTML(product);
-  if (existing) {
-    const div      = document.createElement('div');
-    div.innerHTML  = html;
-    existing.replaceWith(div.firstElementChild);
-    attachCardHandlers(product.id);
-  } else {
-    const grid = el('products-grid');
-    const div  = document.createElement('div');
-    div.innerHTML = html;
-    grid.appendChild(div.firstElementChild);
-    attachCardHandlers(product.id);
+// ── Render ────────────────────────────────────────────────────────────────────
+function renderAll() {
+  const list = el('releases-list');
+  const empt = el('empty-state');
+  if (!list) return;
+
+  if (state.products.length === 0) {
+    list.innerHTML = '';
+    empt.style.display = 'flex';
+    el('header-count').textContent = '';
+    return;
   }
+  empt.style.display = 'none';
+  el('header-count').textContent = `${state.products.length} release${state.products.length !== 1 ? 's' : ''}`;
+
+  // Diff-update: only rebuild rows that changed
+  const rendered = new Set();
+  state.products.forEach(p => {
+    rendered.add(p.id);
+    const existing = el(`row-${p.id}`);
+    const html = buildRowHTML(p);
+    if (!existing) {
+      const d = document.createElement('div');
+      d.innerHTML = html;
+      list.appendChild(d.firstElementChild);
+    } else {
+      const d = document.createElement('div');
+      d.innerHTML = html;
+      existing.replaceWith(d.firstElementChild);
+    }
+    attachRowHandlers(p.id);
+  });
+
+  // Remove rows for deleted products
+  [...list.children].forEach(child => {
+    const id = child.id?.replace('row-', '');
+    if (id && !rendered.has(id)) child.remove();
+  });
 }
 
-function buildCardHTML(p) {
+function buildRowHTML(p) {
   const checking = state.checking.has(p.id);
+  const carting  = state.carting.has(p.id);
+  const checkout = state.checkoutReady[p.id] || null;
 
   // Status badge
   let badgeClass, badgeText;
-  if (p.inStock === true)  { badgeClass = 'badge-instock';  badgeText = 'In Stock'; }
-  else if (p.inStock === false) { badgeClass = 'badge-outstock'; badgeText = 'Sold Out'; }
-  else                     { badgeClass = 'badge-unknown';  badgeText = 'Unknown'; }
-
-  // Price display
-  let priceHTML = '<span class="card-price">—</span>';
-  if (p.price !== null && p.price !== undefined) {
-    const fmt      = `$${p.price.toFixed(2)}`;
-    const origHTML = (p.originalPrice && p.originalPrice !== p.price)
-      ? `<span class="price-orig">$${p.originalPrice.toFixed(2)}</span>` : '';
-    priceHTML = `<div class="card-price">${fmt}${origHTML}</div>`;
+  const now = Date.now();
+  const rdMs = p.releaseDate ? new Date(p.releaseDate).getTime() : null;
+  if (rdMs && rdMs > now) {
+    badgeClass = 'upcoming'; badgeText = 'Upcoming';
+  } else if (p.inStock === true) {
+    badgeClass = 'instock'; badgeText = 'In Stock';
+  } else {
+    badgeClass = 'soldout'; badgeText = p.inStock === false ? 'Sold Out' : 'Unknown';
   }
 
-  const releaseHTML = p.releaseDate ? buildReleaseHTML(p.releaseDate) : '';
-  const planHTML = buildPurchasePlanHTML(p);
-
-  // Size chips
-  let sizesHTML = '';
-  if (p.availableSizes && p.availableSizes.length > 0) {
-    const chips = p.availableSizes.map(s =>
-      `<span class="size-chip ${s.available ? 'available' : 'sold-out'}" title="${s.available ? 'Available' : 'Sold out'}">${escHtml(s.size)}</span>`
-    ).join('');
-    sizesHTML = `<div class="sizes-label">Sizes</div><div class="sizes-grid">${chips}</div>`;
+  // Release info
+  let releaseHTML = '';
+  if (p.releaseDate) {
+    const d = new Date(p.releaseDate);
+    const abs = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const diffMs = d - now;
+    let rel = '';
+    if (diffMs > 0) {
+      const days = Math.ceil(diffMs / 86400000);
+      rel = days === 1 ? 'Tomorrow' : `In ${days} days`;
+    } else {
+      rel = 'Released';
+    }
+    releaseHTML = `<span class="release-date">${abs}</span><span class="release-countdown">${rel}</span>`;
   }
 
-  // Error
-  const errorHTML = p.lastError
-    ? `<div class="card-error">⚠ ${escHtml(p.lastError)}</div>` : '';
-
-  const cartBadge = p.inCart
-    ? `<span class="cart-chip">💼 In Cart</span>`
-    : '';
-  const accessBadge = p.nikeAccountRequired
-    ? `<span class="status-tag account-required">Account access required</span>`
-    : `<span class="status-tag account-ok">Store access OK</span>`;
+  // Price
+  let priceHTML = '';
+  if (p.price != null) {
+    priceHTML = `<span class="row-price">$${Number(p.price).toFixed(2)}</span>`;
+    if (p.originalPrice && p.originalPrice !== p.price)
+      priceHTML += `<span class="row-price-orig">$${Number(p.originalPrice).toFixed(2)}</span>`;
+  }
 
   // Image
   const imgHTML = p.image
-    ? `<img class="card-image" src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><div class="card-image-placeholder" style="display:none">👟</div>`
-    : `<div class="card-image-placeholder">👟</div>`;
+    ? `<img class="row-img" src="${escHtml(p.image)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="row-img-placeholder" style="display:none">👟</div>`
+    : `<div class="row-img-placeholder">👟</div>`;
+
+  // Sizes (show only a few)
+  let sizesHTML = '';
+  if (p.availableSizes && p.availableSizes.length > 0) {
+    const chips = p.availableSizes.slice(0, 8).map(s =>
+      `<span class="size-chip ${s.available ? 'avail' : 'gone'}">${escHtml(s.size)}</span>`
+    ).join('');
+    sizesHTML = `<div class="row-sizes">${chips}</div>`;
+  }
+
+  // Cart button
+  let cartBtn;
+  if (p.inCart) {
+    cartBtn = `<button class="btn-cart ready" disabled>✅ Ready!</button>`;
+  } else if (carting) {
+    cartBtn = `<button class="btn-cart checking" disabled><div class="spinner"></div></button>`;
+  } else {
+    cartBtn = `<button class="btn-cart" data-action="cart" data-id="${p.id}">Add to Cart</button>`;
+  }
+
+  // Error
+  const errHTML = p.lastError ? `<div class="row-error">⚠ ${escHtml(p.lastError)}</div>` : '';
+
+  // Checkout ready panel
+  let checkoutHTML = '';
+  if (checkout) {
+    const sizesLabel = (checkout.selectedSizes || []).map(s => `${escHtml(s.size)} x${s.quantity}`).join(', ');
+    const prof = checkout.profile || {};
+    let profileLine = '';
+    if (prof.fullName || prof.address1) {
+      const parts = [prof.fullName, prof.address1, [prof.city, prof.state, prof.postalCode].filter(Boolean).join(' ')].filter(Boolean);
+      profileLine += `<span class="checkout-profile-line">${escHtml(parts.join(' · '))}</span>`;
+    }
+    if (prof.cardBrand || prof.cardLast4) {
+      const card = [prof.cardBrand, prof.cardLast4 ? `****${prof.cardLast4}` : ''].filter(Boolean).join(' ');
+      profileLine += `<span class="checkout-card-line">${escHtml(card)}</span>`;
+    }
+    checkoutHTML = `<div class="checkout-panel">
+      <div class="checkout-panel-header">
+        <span class="checkout-panel-badge">Checkout Ready</span>
+        <span class="checkout-sizes-label">${sizesLabel || '1 item'}</span>
+      </div>
+      ${profileLine ? `<div class="checkout-profile-hint">${profileLine}</div>` : ''}
+    </div>`;
+  }
 
   return `
-<div class="product-card" id="card-${p.id}" data-id="${p.id}">
-  ${checking ? '<div class="card-checking-bar"></div>' : ''}
+<div class="release-row" id="row-${p.id}" data-id="${p.id}">
+  ${checking ? '<div class="scanning-bar"></div>' : ''}
   ${imgHTML}
-  <div class="card-body">
-    <div class="card-top">
-      <div class="card-name">${escHtml(p.name)}</div>
-      <span class="card-badge ${badgeClass}">${badgeText}</span>
+  <div class="row-info">
+    <div class="row-name">${escHtml(p.name || p.url)}</div>
+    <div class="row-meta">
+      <span class="row-store">${escHtml(p.store || '')}</span>
+      ${priceHTML}
     </div>
-    <div class="card-meta">
-      ${p.styleCode ? `<span>${escHtml(p.styleCode)}</span>` : ''}
-      ${p.colorway  ? ` · <span>${escHtml(p.colorway)}</span>` : ''}
-      ${cartBadge}
-      ${accessBadge}
-      ${p.cartAttempts ? ` · <span class="cart-meta-text">${p.cartAttempts} attempts / ${p.cartSuccessCount || 0} success</span>` : ''}
+    <div class="row-release">
+      <span class="release-badge ${badgeClass}">${badgeText}</span>
+      ${releaseHTML}
     </div>
-    ${priceHTML}
-    ${releaseHTML}
-    ${planHTML}
-    ${errorHTML}
     ${sizesHTML}
-    <div class="card-footer">
-      <span class="card-last-check">${p.lastChecked ? 'Checked ' + timeAgo(p.lastChecked) : 'Not checked yet'}</span>
-      <div class="card-actions">
-        <button class="btn btn-ghost btn-sm btn-plan" data-id="${p.id}" title="Purchase plan">🗓 Plan</button>
-        ${p.inCart ? '<button class="btn btn-ghost btn-sm" disabled title="Already in cart">💼 In Cart</button>' : `<button class="btn btn-ghost btn-sm btn-add-cart" data-id="${p.id}" title="Add to cart">🛒 Add to Cart</button>`}
-        <button class="btn btn-ghost btn-sm btn-check-now" data-id="${p.id}" ${checking ? 'disabled' : ''} title="Check now">↻</button>
-        <button class="btn btn-danger btn-sm btn-remove" data-id="${p.id}" title="Remove">✕</button>
-      </div>
-    </div>
+    ${errHTML}
+    ${checkoutHTML}
+  </div>
+  <div class="row-action">
+    ${cartBtn}
+    <a class="btn-row-open" href="${escHtml(p.url)}" target="_blank" rel="noopener">Open ↗</a>
+    <button class="btn-row-remove" data-action="remove" data-id="${p.id}" title="Stop tracking">✕</button>
   </div>
 </div>`;
 }
 
-function attachCardHandlers(id) {
-  const card = el(`card-${id}`);
-  if (!card) return;
-
-  card.querySelector('.btn-plan')?.addEventListener('click', () => {
-    openPlanModal(id);
-  });
-
-  card.querySelector('.btn-check-now')?.addEventListener('click', async () => {
-    state.checking.add(id);
-    renderProductCard(state.products.find(p => p.id === id));
-    try {
-      const res = await fetch(`${API}/api/products/${id}/check`, { method: 'POST' });
-      if (!res.ok) {
-        const e = await res.json();
-        toast('error', 'Check failed', e.error);
-        state.checking.delete(id);
-        renderProductCard(state.products.find(p => p.id === id));
-      }
-    } catch {
-      toast('error', 'Check failed', 'Cannot reach server');
-      state.checking.delete(id);
-      renderProductCard(state.products.find(p => p.id === id));
-    }
-  });
-
-  card.querySelector('.btn-add-cart')?.addEventListener('click', async () => {
-    try {
-      const res = await fetch(`${API}/api/products/${id}/cart`, { method: 'POST' });
-      if (!res.ok) {
-        const e = await res.json();
-        toast('error', 'Cart error', e.error || 'Failed to add to cart');
-        return;
-      }
-      const json = await res.json();
-      const updated = json.product;
-      const idx = state.products.findIndex(p => p.id === updated.id);
-      if (idx !== -1) {
-        state.products[idx] = { ...state.products[idx], ...updated };
-        renderProductCard(state.products[idx]);
-      }
-      updateStats();
-      toast('success', 'Added to cart', updated.name);
-    } catch {
-      toast('error', 'Cart error', 'Cannot reach server');
-    }
-  });
-
-  card.querySelector('.btn-remove')?.addEventListener('click', () => {
-    removeProduct(id);
+function attachRowHandlers(id) {
+  const row = el(`row-${id}`);
+  if (!row) return;
+  row.querySelectorAll('[data-action]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const action = e.currentTarget.dataset.action;
+      const pid    = e.currentTarget.dataset.id;
+      if (action === 'cart')   handleCart(pid);
+      if (action === 'remove') handleRemove(pid);
+    });
   });
 }
 
-async function removeProduct(id) {
+// ── Cart ──────────────────────────────────────────────────────────────────────
+async function handleCart(id) {
+  if (state.carting.has(id)) return;
+  state.carting.add(id);
+  renderAll();
+  try {
+    const res  = await fetch(`${API}/api/products/${id}/cart`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      const idx = state.products.findIndex(p => p.id === id);
+      if (idx !== -1) state.products[idx] = { ...state.products[idx], ...(data.product || {}), inCart: true };
+      toast('success', '✅ In Cart', state.products.find(p => p.id === id)?.name || 'Product');
+    } else {
+      toast('error', 'Cart failed', data.error || 'Unknown error');
+    }
+  } catch (e) {
+    toast('error', 'Cart error', e.message);
+  } finally {
+    state.carting.delete(id);
+    renderAll();
+  }
+}
+
+// ── Remove ────────────────────────────────────────────────────────────────────
+async function handleRemove(id) {
+  const p = state.products.find(x => x.id === id);
+  if (!confirm(`Stop tracking "${p?.name || p?.url || id}"?`)) return;
   try {
     await fetch(`${API}/api/products/${id}`, { method: 'DELETE' });
-  } catch {
-    toast('error', 'Error', 'Cannot reach server');
+    state.products = state.products.filter(x => x.id !== id);
+    renderAll();
+  } catch (e) {
+    toast('error', 'Remove failed', e.message);
   }
 }
 
-function flashCard(productId) {
-  const card = el(`card-${productId}`);
-  if (!card) return;
-  card.classList.remove('flash-alert');
-  void card.offsetWidth;
-  card.classList.add('flash-alert');
-}
+// ── Add URL ───────────────────────────────────────────────────────────────────
+el('btn-add').addEventListener('click', () => openModal('modal-add'));
 
-function showEmptyState() {
-  el('empty-state').style.display = '';
-  el('products-grid').style.display = 'none';
-}
-
-function hideEmptyState() {
-  el('empty-state').style.display = 'none';
-  el('products-grid').style.display = '';
-}
-
-// ── Alerts ────────────────────────────────────────────────────────────────────
-function renderAlerts() {
-  const list = el('alerts-list');
-  if (state.alerts.length === 0) {
-    list.innerHTML = '<p class="no-alerts">No alerts yet</p>';
-    return;
-  }
-  list.innerHTML = state.alerts.map(buildAlertHTML).join('');
-}
-
-function prependAlertItem(alert) {
-  const list = el('alerts-list');
-  const noMsg = list.querySelector('.no-alerts');
-  if (noMsg) noMsg.remove();
-
-  const div      = document.createElement('div');
-  div.innerHTML  = buildAlertHTML(alert);
-  list.insertBefore(div.firstElementChild, list.firstChild);
-
-  // Keep DOM cap at 50
-  while (list.children.length > 50) list.lastChild?.remove();
-}
-
-const ALERT_LABELS = {
-  PRICE_DROP    : '📉 Price Drop',
-  PRICE_RISE    : '📈 Price Rise',
-  BACK_IN_STOCK : '✅ Back in Stock',
-  OUT_OF_STOCK  : '❌ Sold Out',
-  SIZE_AVAILABLE: '👟 New Sizes',
-  RELEASE_DATE_SET: '📅 Release Date',
-  CART_ADDED    : '🛒 Added to Cart',
-  PURCHASE_WINDOW_READY: '⏰ Purchase Window',
-};
-
-function buildAlertHTML(a) {
-  return `
-<div class="alert-item ${a.type}" data-id="${a.id}">
-  <div class="alert-type">${ALERT_LABELS[a.type] || a.type}</div>
-  <div class="alert-msg">${escHtml(a.message)}</div>
-  <div class="alert-name">${escHtml(a.productName)}</div>
-  <div class="alert-time">${timeAgo(a.timestamp)}</div>
-</div>`;
-}
-
-// ── Stats ─────────────────────────────────────────────────────────────────────
-function updateStats() {
-  el('stat-monitored').textContent = state.products.length;
-  el('stat-instock').textContent   = state.products.filter(p => p.inStock === true).length;
-  el('stat-incart').textContent    = state.products.filter(p => p.inCart === true).length;
-  el('stat-cart-successes').textContent = state.products.reduce((sum, p) => sum + (p.cartSuccessCount || 0), 0);
-  el('stat-cart-attempts').textContent = state.products.reduce((sum, p) => sum + (p.cartAttempts || 0), 0);
-
-  const accountNeeded = state.products.filter(p => p.nikeAccountRequired).length;
-  setNikeAccessStatus(accountNeeded === 0, accountNeeded);
-
-  const today  = new Date().toDateString();
-  const todayAlerts = state.alerts.filter(a => new Date(a.timestamp).toDateString() === today).length;
-  el('stat-alerts').textContent = todayAlerts;
-
-  el('stat-interval').textContent = state.settings.checkIntervalMinutes
-    ? `${state.settings.checkIntervalMinutes}m` : '—';
-
-  if (state.status?.lastCheckTime) {
-    el('stat-last-check').textContent = timeAgo(state.status.lastCheckTime);
-  }
-}
-
-// ── Connection status ─────────────────────────────────────────────────────────
-function setConnStatus(cls, label) {
-  const pill = el('conn-status');
-  pill.className = `status-pill ${cls}`;
-  pill.querySelector('.status-label').textContent = label;
-}
-
-function setNikeAccessStatus(connected, count) {
-  const pill = el('nike-access-status');
-  if (!pill) return;
-  pill.className = `status-pill ${connected ? 'connected' : 'error'}`;
-  pill.querySelector('.status-label').textContent = connected
-    ? 'Store access OK'
-    : `${count} product(s) need account access`;
-}
-
-function normalizePurchasePlan(plan = {}) {
-  return {
-    enabled: false,
-    useReleaseTime: true,
-    targetTime: '',
-    sizeQuantities: [],
-    ...plan,
-  };
-}
-
-function resolvePlanTarget(product, plan) {
-  if (plan.useReleaseTime && product.releaseDate) return product.releaseDate;
-  return plan.targetTime || '';
-}
-
-function buildPurchasePlanHTML(product) {
-  const plan = normalizePurchasePlan(product.purchasePlan);
-  if (!plan.enabled) return '';
-
-  const target = resolvePlanTarget(product, plan);
-  const targetLabel = target
-    ? formatReleaseDate(target)
-    : (plan.useReleaseTime ? 'Waiting for detected release time' : 'No target selected');
-  const modeLabel = plan.useReleaseTime ? 'Store release time' : 'Manual target';
-  const sizeLabel = plan.sizeQuantities.length
-    ? plan.sizeQuantities.map(entry => `${entry.size} x${entry.quantity}`).join(', ')
-    : 'No sizes selected';
-
-  return `
-  <div class="purchase-plan-summary">
-    <div class="plan-summary-label">Plan</div>
-    <div class="plan-summary-line">${escHtml(modeLabel)}: ${escHtml(targetLabel)}</div>
-    <div class="plan-summary-line">${escHtml(sizeLabel)}</div>
-    <div class="plan-summary-line">30-minute checks until target</div>
-  </div>`;
-}
-
-function openPlanModal(productId) {
-  const product = state.products.find(item => item.id === productId);
-  if (!product) return;
-
-  state.planProductId = productId;
-  const plan = normalizePurchasePlan(product.purchasePlan);
-
-  setVal('plan-product-id', productId);
-  el('plan-product-name').textContent = product.name;
-  setChecked('plan-enabled', plan.enabled);
-  setChecked('plan-use-release-time', plan.useReleaseTime);
-  setVal('plan-target-time', toDateTimeLocalValue(plan.targetTime || ''));
-  renderPlanSizeRows(plan.sizeQuantities);
-  el('plan-error').classList.add('hidden');
-  el('plan-error').textContent = '';
-  togglePlanTargetInput();
-  el('modal-plan').classList.add('open');
-}
-
-function renderPlanSizeRows(items = []) {
-  const list = el('plan-size-list');
-  list.innerHTML = '';
-
-  const entries = items.length > 0 ? items : [{ size: '', quantity: 1 }];
-  entries.forEach(entry => addPlanSizeRow(entry.size, entry.quantity));
-}
-
-function addPlanSizeRow(size = '', quantity = 1) {
-  const row = document.createElement('div');
-  row.className = 'plan-size-row';
-  row.innerHTML = `
-    <input type="text" class="form-input plan-size-input" placeholder="Size" value="${escHtml(size)}" />
-    <input type="number" class="form-input plan-qty-input" min="1" max="10" value="${Math.max(1, quantity || 1)}" />
-    <button type="button" class="btn btn-danger btn-sm btn-plan-remove">✕</button>
-  `;
-  el('plan-size-list').appendChild(row);
-}
-
-function collectPlanSizeRows() {
-  return Array.from(document.querySelectorAll('.plan-size-row'))
-    .map(row => ({
-      size: row.querySelector('.plan-size-input')?.value.trim() || '',
-      quantity: Math.max(1, parseInt(row.querySelector('.plan-qty-input')?.value) || 1),
-    }))
-    .filter(entry => entry.size);
-}
-
-function togglePlanTargetInput() {
-  const useReleaseTime = el('plan-use-release-time').checked;
-  el('plan-target-time').disabled = useReleaseTime;
-}
-
-async function savePurchasePlan() {
-  const productId = state.planProductId || el('plan-product-id').value;
-  const errorEl = el('plan-error');
-  const payload = {
-    enabled: el('plan-enabled').checked,
-    useReleaseTime: el('plan-use-release-time').checked,
-    targetTime: fromDateTimeLocalValue(el('plan-target-time').value),
-    sizeQuantities: collectPlanSizeRows(),
-  };
-
-  if (payload.enabled && !payload.useReleaseTime && !payload.targetTime) {
-    errorEl.textContent = 'Choose a fallback target time or enable release-time mode.';
-    errorEl.classList.remove('hidden');
-    return;
-  }
-
-  try {
-    const res = await fetch(`${API}/api/products/${productId}/purchase-plan`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const updated = await res.json();
-    if (!res.ok) throw new Error(updated.error || 'Save failed');
-
-    const idx = state.products.findIndex(item => item.id === updated.id);
-    if (idx !== -1) {
-      state.products[idx] = updated;
-      renderProductCard(updated);
-    }
-    closeModal('modal-plan');
-    toast('success', 'Purchase plan saved', updated.name);
-  } catch (err) {
-    errorEl.textContent = err.message;
-    errorEl.classList.remove('hidden');
-  }
-}
-
-function toDateTimeLocalValue(iso) {
-  if (!iso) return '';
-  const date = new Date(iso);
-  if (isNaN(date)) return '';
-  const pad = value => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function fromDateTimeLocalValue(value) {
-  if (!value) return null;
-  const date = new Date(value);
-  return isNaN(date) ? null : date.toISOString();
-}
-
-// ── Add product ───────────────────────────────────────────────────────────────
-function openAddModal() {
-  el('add-url').value = '';
-  el('add-error').classList.add('hidden');
-  el('add-error').textContent = '';
-  el('modal-add').classList.add('open');
-  setTimeout(() => el('add-url').focus(), 50);
-}
-
-async function submitAddProduct() {
+el('btn-add-submit').addEventListener('click', async () => {
   const url = el('add-url').value.trim();
   const errEl = el('add-error');
+  errEl.classList.add('hidden');
+  if (!url) { errEl.textContent = 'Enter a URL.'; errEl.classList.remove('hidden'); return; }
 
-  if (!url) { showAddError('Please enter a URL'); return; }
-
-  setAddLoading(true);
+  const txt = el('add-btn-text');
+  const sp  = el('add-btn-spinner');
+  txt.textContent = 'Tracking…';
+  sp.classList.remove('hidden');
+  el('btn-add-submit').disabled = true;
 
   try {
     const res  = await fetch(`${API}/api/products`, {
-      method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify({ url }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
     });
-
     const data = await res.json();
-
-    if (!res.ok) {
-      showAddError(data.error || 'Unknown error');
-      return;
-    }
-
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    el('add-url').value = '';
     closeModal('modal-add');
-  } catch {
-    showAddError('Cannot reach server — is it running?');
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
   } finally {
-    setAddLoading(false);
+    txt.textContent = 'Track';
+    sp.classList.add('hidden');
+    el('btn-add-submit').disabled = false;
   }
-}
+});
 
-function showAddError(msg) {
-  const errEl = el('add-error');
-  errEl.textContent = msg;
-  errEl.classList.remove('hidden');
-}
+// ── Refresh ───────────────────────────────────────────────────────────────────
+el('btn-refresh').addEventListener('click', async () => {
+  el('btn-refresh').disabled = true;
+  el('btn-refresh').textContent = '↻ Checking…';
+  try {
+    await fetch(`${API}/api/check-all`, { method: 'POST' });
+    toast('info', 'Checking all products…', 'Updates will appear shortly');
+  } catch (e) {
+    toast('error', 'Refresh failed', e.message);
+  } finally {
+    setTimeout(() => { el('btn-refresh').disabled = false; el('btn-refresh').textContent = '↻ Refresh'; }, 3000);
+  }
+});
 
-function setAddLoading(loading) {
-  el('btn-add-submit').disabled = loading;
-  el('add-btn-text').textContent = loading ? 'Fetching…' : 'Start Monitoring';
-  el('add-btn-spinner').classList.toggle('hidden', !loading);
-}
+// ── Profile modal ─────────────────────────────────────────────────────────────
+el('btn-profile').addEventListener('click', () => openModal('modal-profile'));
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-function applySettingsToForm() {
-  const s = state.settings;
-  const profile = state.checkoutProfile || {};
-  setVal('set-interval',     s.checkIntervalMinutes ?? 5);
-  setChecked('set-email-enabled', s.emailEnabled ?? false);
-  setVal('set-email-host',   s.emailHost   || 'smtp.gmail.com');
-  setVal('set-email-port',   s.emailPort   || 587);
-  setVal('set-email-user',   s.emailUser   || '');
-  setVal('set-email-pass',   s.emailPass   || '');
-  setVal('set-email-to',     s.emailTo     || '');
-  setVal('checkout-full-name', profile.fullName || '');
-  setVal('checkout-email', profile.email || '');
-  setVal('checkout-phone', profile.phone || '');
-  setVal('checkout-address1', profile.address1 || '');
-  setVal('checkout-address2', profile.address2 || '');
-  setVal('checkout-city', profile.city || '');
-  setVal('checkout-state', profile.state || '');
-  setVal('checkout-postal', profile.postalCode || '');
-  setVal('checkout-country', profile.country || 'US');
-  setVal('checkout-payment-label', profile.paymentLabel || '');
-  setVal('checkout-card-brand', profile.cardBrand || '');
-  setVal('checkout-card-last4', profile.cardLast4 || '');
-  updateEmailFieldsVisibility();
-}
+el('btn-save-profile').addEventListener('click', async () => {
+  el('btn-save-profile').disabled = true;
+  el('btn-save-profile').textContent = 'Saving…';
+  try {
+    await saveProfile();
+    await saveSettings();
+    closeModal('modal-profile');
+    toast('success', 'Profile saved', 'Your info has been updated');
+  } catch (e) {
+    toast('error', 'Save failed', e.message);
+  } finally {
+    el('btn-save-profile').disabled = false;
+    el('btn-save-profile').textContent = 'Save';
+  }
+});
 
-function collectCheckoutProfile() {
-  return {
-    fullName: el('checkout-full-name').value.trim(),
-    email: el('checkout-email').value.trim(),
-    phone: el('checkout-phone').value.trim(),
-    address1: el('checkout-address1').value.trim(),
-    address2: el('checkout-address2').value.trim(),
-    city: el('checkout-city').value.trim(),
-    state: el('checkout-state').value.trim(),
-    postalCode: el('checkout-postal').value.trim(),
-    country: el('checkout-country').value.trim(),
-    paymentLabel: el('checkout-payment-label').value.trim(),
-    cardBrand: el('checkout-card-brand').value.trim(),
-    cardLast4: el('checkout-card-last4').value.trim(),
+async function saveProfile() {
+  const profile = {
+    fullName:  el('checkout-full-name').value.trim(),
+    email:     el('checkout-email').value.trim(),
+    phone:     el('checkout-phone').value.trim(),
+    address1:  el('checkout-address1').value.trim(),
+    address2:  el('checkout-address2').value.trim(),
+    city:      el('checkout-city').value.trim(),
+    state:     el('checkout-state').value.trim(),
+    postalCode:el('checkout-postal').value.trim(),
+    country:   el('checkout-country').value.trim(),
+    payment: {
+      label: el('checkout-payment-label').value.trim(),
+      brand: el('checkout-card-brand').value.trim(),
+      last4: el('checkout-card-last4').value.trim(),
+    },
   };
-}
-
-function updateEmailFieldsVisibility() {
-  const enabled = el('set-email-enabled').checked;
-  el('email-fields').style.display = enabled ? '' : 'none';
+  const res = await fetch(`${API}/api/checkout-profile`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  });
+  if (!res.ok) throw new Error('Profile save failed');
+  state.checkoutProfile = await res.json();
 }
 
 async function saveSettings() {
+  const emailEnabled = el('set-email-enabled').checked;
   const settings = {
     checkIntervalMinutes: parseInt(el('set-interval').value) || 5,
-    emailEnabled        : el('set-email-enabled').checked,
-    emailHost           : el('set-email-host').value.trim(),
-    emailPort           : parseInt(el('set-email-port').value) || 587,
-    emailUser           : el('set-email-user').value.trim(),
-    emailPass           : el('set-email-pass').value,
-    emailTo             : el('set-email-to').value.trim(),
+    emailEnabled,
   };
-  const checkoutProfile = collectCheckoutProfile();
-
-  try {
-    const [settingsRes, checkoutRes] = await Promise.all([
-      fetch(`${API}/api/settings`, {
-        method : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify(settings),
-      }),
-      fetch(`${API}/api/checkout-profile`, {
-        method : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify(checkoutProfile),
-      }),
-    ]);
-
-    if (!settingsRes.ok || !checkoutRes.ok) throw new Error('Save failed');
-
-    state.settings = { ...state.settings, ...settings, emailPass: settings.emailPass ? '***' : '' };
-    state.checkoutProfile = await checkoutRes.json();
-    updateStats();
-    closeModal('modal-settings');
-    toast('success', 'Settings saved', 'Check interval updated');
-  } catch {
-    toast('error', 'Error', 'Could not save settings');
+  if (emailEnabled) {
+    settings.emailHost = el('set-email-host').value.trim();
+    settings.emailPort = parseInt(el('set-email-port').value) || 587;
+    settings.emailUser = el('set-email-user').value.trim();
+    const pass = el('set-email-pass').value;
+    if (pass && pass !== '***') settings.emailPass = pass;
+    settings.emailTo = el('set-email-to').value.trim();
   }
-}
-
-// ── Check all ─────────────────────────────────────────────────────────────────
-async function checkAll() {
-  try {
-    await fetch(`${API}/api/check-all`, { method: 'POST' });
-    toast('info', 'Checking…', `Running check on ${state.products.length} product(s)`);
-  } catch {
-    toast('error', 'Error', 'Cannot reach server');
-  }
-}
-
-// ── Browser notifications ─────────────────────────────────────────────────────
-function requestNotificationPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
-}
-
-function showBrowserNotification(alert) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const icon = { PRICE_DROP: '📉', PRICE_RISE: '📈', BACK_IN_STOCK: '✅', OUT_OF_STOCK: '❌', SIZE_AVAILABLE: '👟', RELEASE_DATE_SET: '📅', CART_ADDED: '🛒', PURCHASE_WINDOW_READY: '⏰' }[alert.type] || '🔔';
-  const n = new Notification(`${icon} ${alert.type.replace(/_/g, ' ')}`, {
-    body: `${alert.message}\n${alert.productName}`,
-    tag : alert.productId,
+  const res = await fetch(`${API}/api/settings`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
   });
-  n.onclick = () => { window.focus(); n.close(); };
-  setTimeout(() => n.close(), 6000);
+  if (!res.ok) throw new Error('Settings save failed');
 }
 
-// ── Toasts ────────────────────────────────────────────────────────────────────
-const TOAST_ICONS = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
-
-function toast(type, title, msg = '') {
-  const container = el('toast-container');
-  const div = document.createElement('div');
-  div.className = `toast ${type}`;
-  div.innerHTML = `
-    <span class="toast-icon">${TOAST_ICONS[type] || '●'}</span>
-    <div class="toast-text">
-      <div class="toast-title">${escHtml(title)}</div>
-      ${msg ? `<div class="toast-msg">${escHtml(msg)}</div>` : ''}
-    </div>`;
-  container.appendChild(div);
-
-  setTimeout(() => {
-    div.classList.add('removing');
-    div.addEventListener('animationend', () => div.remove());
-  }, 4000);
+function applyProfileToForm() {
+  const p = state.checkoutProfile || {};
+  const set = (id, val) => { const e = el(id); if (e) e.value = val || ''; };
+  set('checkout-full-name', p.fullName);
+  set('checkout-email',     p.email);
+  set('checkout-phone',     p.phone);
+  set('checkout-address1',  p.address1);
+  set('checkout-address2',  p.address2);
+  set('checkout-city',      p.city);
+  set('checkout-state',     p.state);
+  set('checkout-postal',    p.postalCode);
+  set('checkout-country',   p.country);
+  const pay = p.payment || {};
+  set('checkout-payment-label', pay.label);
+  set('checkout-card-brand',    pay.brand);
+  set('checkout-card-last4',    pay.last4);
 }
+
+function applySettingsToForm() {
+  const s = state.settings || {};
+  if (s.checkIntervalMinutes) el('set-interval').value = s.checkIntervalMinutes;
+  const enabled = !!s.emailEnabled;
+  el('set-email-enabled').checked = enabled;
+  el('email-fields').classList.toggle('hidden', !enabled);
+  if (s.emailHost) el('set-email-host').value = s.emailHost;
+  if (s.emailPort) el('set-email-port').value = s.emailPort;
+  if (s.emailUser) el('set-email-user').value = s.emailUser;
+  if (s.emailPass) el('set-email-pass').value = '***';
+  if (s.emailTo)   el('set-email-to').value   = s.emailTo;
+}
+
+// Toggle email fields visibility
+el('set-email-enabled').addEventListener('change', e => {
+  el('email-fields').classList.toggle('hidden', !e.target.checked);
+});
 
 // ── Modal helpers ─────────────────────────────────────────────────────────────
-function closeModal(id) {
-  el(id).classList.remove('open');
-}
+function openModal(id)  { el(id).classList.add('open'); }
+function closeModal(id) { el(id).classList.remove('open'); }
 
-document.addEventListener('click', e => {
-  // Close on overlay click
-  if (e.target.classList.contains('modal-overlay')) {
-    e.target.classList.remove('open');
-  }
-  // Close buttons
-  const btn = e.target.closest('[data-modal]');
-  if (btn) closeModal(btn.dataset.modal);
+document.querySelectorAll('.modal-close, [data-modal]').forEach(btn => {
+  btn.addEventListener('click', e => {
+    const target = e.currentTarget.dataset.modal || e.currentTarget.closest('.modal-overlay')?.id;
+    if (target) closeModal(target);
+  });
 });
-
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay.id); });
+});
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+  if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.open').forEach(m => closeModal(m.id));
 });
 
-// ── Wire up event listeners ───────────────────────────────────────────────────
-function wireEvents() {
-  el('btn-add').addEventListener('click', openAddModal);
-  el('btn-add-empty').addEventListener('click', openAddModal);
-
-  el('btn-add-submit').addEventListener('click', submitAddProduct);
-  el('add-url').addEventListener('keydown', e => { if (e.key === 'Enter') submitAddProduct(); });
-
-  el('btn-settings').addEventListener('click', () => {
-    applySettingsToForm();
-    el('modal-settings').classList.add('open');
-  });
-  el('btn-save-settings').addEventListener('click', saveSettings);
-
-  el('btn-check-all').addEventListener('click', checkAll);
-
-  el('btn-save-plan').addEventListener('click', savePurchasePlan);
-  el('btn-plan-add-size').addEventListener('click', () => addPlanSizeRow());
-  el('plan-use-release-time').addEventListener('change', togglePlanTargetInput);
-  el('plan-size-list').addEventListener('click', e => {
-    const btn = e.target.closest('.btn-plan-remove');
-    if (!btn) return;
-    btn.closest('.plan-size-row')?.remove();
-    if (!document.querySelector('.plan-size-row')) addPlanSizeRow();
-  });
-
-  el('btn-clear-alerts').addEventListener('click', async () => {
-    await fetch(`${API}/api/alerts`, { method: 'DELETE' });
-  });
-
-  el('set-email-enabled').addEventListener('change', updateEmailFieldsVisibility);
+// ── Connection status ─────────────────────────────────────────────────────────
+function setConn(status, label) {
+  const pill = el('conn-status');
+  const dot  = pill.querySelector('.conn-dot');
+  const lbl  = pill.querySelector('.conn-label');
+  pill.className = `conn-pill ${status}`;
+  lbl.textContent = label;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function el(id)                { return document.getElementById(id); }
-function setVal(id, v)         { const e = el(id); if (e) e.value = v; }
-function setChecked(id, v)     { const e = el(id); if (e) e.checked = v; }
-function escHtml(str)          { const d = document.createElement('div'); d.textContent = String(str ?? ''); return d.innerHTML; }
-
-function timeAgo(iso) {
-  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (diff < 5)   return 'just now';
-  if (diff < 60)  return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(type, title, msg) {
+  const icons = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
+  const c = el('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.innerHTML = `<span class="toast-icon">${icons[type] || 'ℹ️'}</span><div class="toast-text"><div class="toast-title">${escHtml(title)}</div>${msg ? `<div class="toast-msg">${escHtml(msg)}</div>` : ''}</div>`;
+  c.appendChild(t);
+  setTimeout(() => { t.classList.add('removing'); setTimeout(() => t.remove(), 300); }, 4000);
 }
-
-function formatReleaseDate(iso) {
-  const d = new Date(iso);
-  return isNaN(d) ? 'Unknown' : d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-function timeUntil(iso) {
-  const d = new Date(iso);
-  if (isNaN(d)) return '';
-  const diffMs = d.getTime() - Date.now();
-  const absMs  = Math.abs(diffMs);
-  const totalMin = Math.floor(absMs / 60000);
-  const days   = Math.floor(totalMin / (60 * 24));
-  const hours  = Math.floor((totalMin - days * 24 * 60) / 60);
-  const mins   = totalMin % 60;
-  const parts = [];
-  if (days) parts.push(`${days}d`);
-  if (hours) parts.push(`${hours}h`);
-  if (!days && !hours) parts.push(`${mins}m`);
-  const label = parts.join(' ') || 'moments';
-  return diffMs >= 0 ? `in ${label}` : `${label} ago`;
-}
-
-function buildReleaseHTML(iso) {
-  return `
-  <div class="card-release" data-release="${escHtml(iso)}">
-    <span class="release-label">Release</span>
-    <span class="release-abs">${escHtml(formatReleaseDate(iso))}</span>
-    <span class="release-rel">${escHtml(timeUntil(iso))}</span>
-  </div>`;
-}
-
-// Refresh relative timestamps every 30s
-setInterval(() => {
-  document.querySelectorAll('.card-last-check').forEach(el => {
-    const card = el.closest('.product-card');
-    if (!card) return;
-    const id   = card.dataset.id;
-    const p    = state.products.find(p => p.id === id);
-    if (p?.lastChecked) el.textContent = 'Checked ' + timeAgo(p.lastChecked);
-  });
-  document.querySelectorAll('.card-release').forEach(el => {
-    const iso = el.dataset.release;
-    const rel = el.querySelector('.release-rel');
-    if (iso && rel) rel.textContent = timeUntil(iso);
-  });
-  document.querySelectorAll('.alert-time').forEach(el => {
-    const item = el.closest('.alert-item');
-    if (!item) return;
-    const id   = item.dataset.id;
-    const a    = state.alerts.find(a => a.id === id);
-    if (a?.timestamp) el.textContent = timeAgo(a.timestamp);
-  });
-  if (state.status?.lastCheckTime) {
-    document.getElementById('stat-last-check').textContent = timeAgo(state.status.lastCheckTime);
-  }
-}, 30_000);
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-wireEvents();
-requestNotificationPermission();
-showEmptyState(); // default until init arrives

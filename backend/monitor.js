@@ -2,6 +2,7 @@ const cron                  = require('node-cron');
 const { scrapeProduct } = require('./scraper');
 const storage               = require('./storage');
 const notifier              = require('./notifier');
+const checkoutStore         = require('./checkoutStore');
 
 let io              = null;
 let activeCronJob   = null;
@@ -43,10 +44,11 @@ function startPlanCron() {
 }
 
 async function cartAllProducts() {
-  const products = storage.getProducts();
+  // Only auto-cart products that are currently available to buy
+  const products = storage.getProducts().filter(p => p.inStock === true);
   if (products.length === 0) return;
 
-  console.log(`[Monitor] Cart checking ${products.length} product(s)…`);
+  console.log(`[Monitor] Cart checking ${products.length} in-stock product(s)…`);
   lastCartRun = new Date().toISOString();
   if (io) io.emit('monitor:carting', { count: products.length, time: lastCartRun });
 
@@ -178,10 +180,15 @@ async function cartProduct(product) {
   const now = new Date().toISOString();
   const attempts = (product.cartAttempts || 0) + 1;
   const success = product.inCart !== true;
+
+  // Resolve which sizes/quantities to buy
+  const selectedSizes = resolveSelectedSizes(product);
+
   const updates = {
     cartAttempts     : attempts,
     lastCartAttemptAt: now,
     lastCartResult   : success ? 'success' : 'already_in_cart',
+    selectedSizes,
   };
 
   if (success) {
@@ -194,12 +201,13 @@ async function cartProduct(product) {
   if (io) io.emit('product:updated', { id: product.id, ...updated });
 
   if (success) {
+    const sizesLabel = selectedSizes.map(s => `${s.size} x${s.quantity}`).join(', ');
     const alert = {
       productId      : product.id,
       productName    : updated.name,
       url            : updated.url,
       type           : 'CART_ADDED',
-      message        : `${updated.name} was added to cart successfully`,
+      message        : `${updated.name} ready — ${sizesLabel}`,
       oldValue       : product.inCart,
       newValue       : updated.inCart,
       timestamp      : now,
@@ -208,12 +216,54 @@ async function cartProduct(product) {
       productColorway: updated.colorway,
       productSizes   : updated.availableSizes,
       productStyleCode: updated.styleCode,
+      selectedSizes,
     };
     const saved = storage.addAlert(alert);
+    notifier.sendAlert(saved);
     if (io) io.emit('alert:new', saved);
+
+    // Emit checkout:ready with profile so the dashboard can show checkout details
+    let profile = null;
+    try { profile = await checkoutStore.getCheckoutProfile(); } catch {}
+
+    if (io) io.emit('checkout:ready', {
+      productId   : product.id,
+      productName : updated.name,
+      url         : updated.url,
+      image       : updated.image,
+      price       : updated.price,
+      selectedSizes,
+      profile     : profile ? {
+        fullName  : profile.fullName,
+        address1  : profile.address1,
+        city      : profile.city,
+        state     : profile.state,
+        postalCode: profile.postalCode,
+        country   : profile.country,
+        cardBrand : profile.cardBrand,
+        cardLast4 : profile.cardLast4,
+      } : null,
+      timestamp: now,
+    });
   }
 
   return updated;
+}
+
+function resolveSelectedSizes(product) {
+  const sizeQuantities = product.purchasePlan?.sizeQuantities;
+
+  // Use pre-configured sizes if set
+  if (Array.isArray(sizeQuantities) && sizeQuantities.length > 0) {
+    return sizeQuantities;
+  }
+
+  // Otherwise pick one random available size
+  const available = (product.availableSizes || []).filter(s => s.available);
+  if (available.length === 0) return [{ size: 'One Size', quantity: 1 }];
+
+  const pick = available[Math.floor(Math.random() * available.length)];
+  return [{ size: pick.size, quantity: 1 }];
 }
 
 async function checkAllProducts() {
