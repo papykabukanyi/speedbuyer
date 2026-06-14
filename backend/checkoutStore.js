@@ -20,6 +20,7 @@ const DEFAULT_PROFILE = {
   cardBrand: '',
   cardLast4: '',
   updatedAt: null,
+  siteCredentials: {},  // { 'nike.com': { username: '...', password: '...' }, ... }
 };
 
 let pool = null;
@@ -78,6 +79,7 @@ async function init() {
       payment_label TEXT NOT NULL DEFAULT '',
       card_brand TEXT NOT NULL DEFAULT '',
       card_last4 TEXT NOT NULL DEFAULT '',
+      site_credentials JSONB NOT NULL DEFAULT '{}',
       updated_at TIMESTAMPTZ NULL
     )
   `);
@@ -86,6 +88,20 @@ async function init() {
 }
 
 function sanitizeProfile(input = {}) {
+  const creds = input.siteCredentials || {};
+  const sanitized = {};
+
+  // Sanitize site credentials: only store for recognized domains
+  const supportedDomains = ['nike.com', 'adidas.com', 'footlocker.com', 'eastbay.com', 'champssports.com', 'finishline.com', 'stockx.com', 'goat.com', 'stadiumgoods.com', 'supremenewyork.com'];
+  for (const domain of supportedDomains) {
+    if (creds[domain]?.username && creds[domain]?.password) {
+      sanitized[domain] = {
+        username: String(creds[domain].username).trim().slice(0, 255),
+        password: String(creds[domain].password).slice(0, 1000),
+      };
+    }
+  }
+
   return {
     fullName: String(input.fullName || '').trim(),
     email: String(input.email || '').trim(),
@@ -99,6 +115,7 @@ function sanitizeProfile(input = {}) {
     paymentLabel: String(input.paymentLabel || '').trim(),
     cardBrand: String(input.cardBrand || '').trim(),
     cardLast4: String(input.cardLast4 || '').replace(/\D/g, '').slice(-4),
+    siteCredentials: sanitized,
     updatedAt: input.updatedAt || new Date().toISOString(),
   };
 }
@@ -118,6 +135,7 @@ function mapRow(row) {
     paymentLabel: row.payment_label,
     cardBrand: row.card_brand,
     cardLast4: row.card_last4,
+    siteCredentials: row.site_credentials,
     updatedAt: row.updated_at,
   });
 }
@@ -142,10 +160,10 @@ async function saveCheckoutProfile(patch = {}) {
       `
         INSERT INTO checkout_profiles (
           id, full_name, email, phone, address1, address2, city, state,
-          postal_code, country, payment_label, card_brand, card_last4, updated_at
+          postal_code, country, payment_label, card_brand, card_last4, site_credentials, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13, $14
+          $9, $10, $11, $12, $13, $14, $15
         )
         ON CONFLICT (id) DO UPDATE SET
           full_name = EXCLUDED.full_name,
@@ -160,6 +178,7 @@ async function saveCheckoutProfile(patch = {}) {
           payment_label = EXCLUDED.payment_label,
           card_brand = EXCLUDED.card_brand,
           card_last4 = EXCLUDED.card_last4,
+          site_credentials = EXCLUDED.site_credentials,
           updated_at = EXCLUDED.updated_at
       `,
       [
@@ -176,6 +195,7 @@ async function saveCheckoutProfile(patch = {}) {
         next.paymentLabel,
         next.cardBrand,
         next.cardLast4,
+        JSON.stringify(next.siteCredentials),
         next.updatedAt,
       ]
     );

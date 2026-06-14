@@ -601,16 +601,12 @@ async function startDiscoveryScheduler() {
 }
 
 // ── Seed products ────────────────────────────────────────────────────────────
-
-const SEED_URLS = [
-
-  'https://nike.sng.link/Astn5/6tbz/r_6150d2a81b',
-
-  'https://nike.sng.link/Astn5/6tbz/r_f506e438c3',
-
-  'https://nike.sng.link/Astn5/6tbz/r_0f7562e9a5',
-
-];
+// Disabled: use real URLs added via dashboard instead of demo data
+// const SEED_URLS = [
+//   'https://nike.sng.link/Astn5/6tbz/r_6150d2a81b',
+//   'https://nike.sng.link/Astn5/6tbz/r_f506e438c3',
+//   'https://nike.sng.link/Astn5/6tbz/r_0f7562e9a5',
+// ];
 
 
 
@@ -710,10 +706,9 @@ async function start() {
 
     console.log(`\n  SpeedBuyer running → http://localhost:${PORT}\n`);
 
-    // Seed the 3 Nike products and discover trending releases automatically
-
+    // Start discovery scheduler (finds real trending products)
+    // Skip seedProducts() — use dashboard to add real URLs instead
     setTimeout(() => {
-      seedProducts().catch(err => console.error('[Seed] Failed:', err.message));
       startDiscoveryScheduler();
     }, 2000);
 

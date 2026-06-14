@@ -376,7 +376,19 @@ async function saveProfile() {
       brand: el('checkout-card-brand').value.trim(),
       last4: el('checkout-card-last4').value.trim(),
     },
+    siteCredentials: {},
   };
+
+  // Collect site credentials
+  const sites = ['nike.com', 'adidas.com', 'footlocker.com', 'eastbay.com', 'champssports.com', 'finishline.com', 'stockx.com', 'goat.com', 'stadiumgoods.com', 'supremenewyork.com'];
+  for (const site of sites) {
+    const user = el(`site-${site}-user`)?.value.trim();
+    const pass = el(`site-${site}-pass`)?.value.trim();
+    if (user && pass) {
+      profile.siteCredentials[site] = { username: user, password: pass };
+    }
+  }
+
   const res = await fetch(`${API}/api/checkout-profile`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(profile),
@@ -422,6 +434,13 @@ function applyProfileToForm() {
   set('checkout-payment-label', pay.label);
   set('checkout-card-brand',    pay.brand);
   set('checkout-card-last4',    pay.last4);
+
+  // Apply site credentials
+  const creds = p.siteCredentials || {};
+  for (const [site, cred] of Object.entries(creds)) {
+    set(`site-${site}-user`, cred.username);
+    set(`site-${site}-pass`, cred.password);
+  }
 }
 
 function applySettingsToForm() {

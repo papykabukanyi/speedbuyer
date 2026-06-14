@@ -271,6 +271,15 @@ body {
 
 .email-fields { display: flex; flex-direction: column; gap: 10px; }
 
+/* Site credentials */
+.sites-credentials { display: flex; flex-direction: column; gap: 10px; }
+.site-cred-group {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.site-cred-group .form-label { margin-bottom: 4px; font-size: 11px; }
+.site-cred-group .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+
 /* ── Spinner ─────────────────────────────────────────────────────────────── */
 .spinner {
   width: 13px; height: 13px; border-radius: 50%;
